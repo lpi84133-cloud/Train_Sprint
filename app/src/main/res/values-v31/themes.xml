@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Android 12+ (API 31) theme overrides.
+  The splash-screen attributes are only read on API 31+; defining them here
+  keeps the base values/themes.xml clean and avoids lint errors on older targets.
+
+  windowSplashScreenAnimatedIcon MUST be an AdaptiveIconDrawable on API 31+.
+  Referencing a flat PNG here causes the OS to silently fall back to the
+  launcher icon (which can look clipped). We use ic_splash_logo which is
+  identical to the launcher adaptive icon — so splash and home-screen match.
+-->
+<resources>
+
+    <style name="Theme.TrainSprint" parent="Theme.Material3.Dark.NoActionBar">
+        <item name="colorPrimary">@color/gold</item>
+        <item name="colorOnPrimary">@color/black</item>
+        <item name="android:windowBackground">@color/maroon_deep</item>
+        <item name="android:statusBarColor">@color/black</item>
+        <item name="android:navigationBarColor">@color/black</item>
+        <!-- Android 12+ splash screen -->
+        <item name="android:windowSplashScreenBackground">@color/launch_bg</item>
+        <item name="android:windowSplashScreenAnimatedIcon">@drawable/ic_splash_logo</item>
+        <item name="android:windowSplashScreenIconBackgroundColor">@color/launch_bg</item>
+    </style>
+
+    <style name="Theme.TrainSprint.Fullscreen" parent="Theme.TrainSprint">
+        <item name="android:windowFullscreen">true</item>
+        <item name="android:windowContentTransitions">true</item>
+    </style>
+
+</resources>

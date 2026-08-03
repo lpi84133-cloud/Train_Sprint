@@ -1,0 +1,466 @@
+<?xml version="1.0" encoding="utf-8"?>
+<androidx.constraintlayout.widget.ConstraintLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/maroon_deep">
+
+    <!-- Background fills entire screen -->
+    <ImageView
+        android:id="@+id/ivBg"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        android:scaleType="centerCrop"
+        android:contentDescription="@string/app_name"
+        android:src="@drawable/bg_bridge"
+        app:layout_constraintTop_toTopOf="parent"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent" />
+
+    <View
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        android:background="#55000000"
+        app:layout_constraintTop_toTopOf="parent"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent" />
+
+    <!-- ════════════ TOP: compact jackpot banner row ════════════ -->
+    <LinearLayout
+        android:id="@+id/jpBar"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:background="#99000000"
+        android:orientation="horizontal"
+        android:baselineAligned="false"
+        android:paddingTop="2dp"
+        android:paddingBottom="4dp"
+        app:layout_constraintTop_toTopOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent">
+
+        <!-- GRAND -->
+        <LinearLayout
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:gravity="center"
+            android:orientation="vertical">
+
+            <ImageView
+                android:layout_width="match_parent"
+                android:layout_height="64dp"
+                android:adjustViewBounds="true"
+                android:contentDescription="@string/app_name"
+                android:scaleType="fitCenter"
+                android:src="@drawable/banner_grand" />
+
+            <TextView
+                android:id="@+id/jpGrand"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="1dp"
+                android:fontFamily="serif"
+                android:gravity="center"
+                android:maxLines="1"
+                android:paddingHorizontal="2dp"
+                android:shadowColor="#CC000000"
+                android:shadowDx="0"
+                android:shadowDy="1"
+                android:shadowRadius="3"
+                android:text="0"
+                android:textColor="@color/gold_light"
+                android:textSize="22sp"
+                android:textStyle="bold"
+                app:autoSizeMaxTextSize="22sp"
+                app:autoSizeMinTextSize="11sp"
+                app:autoSizeTextType="uniform" />
+        </LinearLayout>
+
+        <!-- MAJOR -->
+        <LinearLayout
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:gravity="center"
+            android:orientation="vertical">
+
+            <ImageView
+                android:layout_width="match_parent"
+                android:layout_height="64dp"
+                android:adjustViewBounds="true"
+                android:contentDescription="@string/app_name"
+                android:scaleType="fitCenter"
+                android:src="@drawable/banner_major" />
+
+            <TextView
+                android:id="@+id/jpMajor"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="1dp"
+                android:fontFamily="serif"
+                android:gravity="center"
+                android:maxLines="1"
+                android:paddingHorizontal="2dp"
+                android:shadowColor="#CC000000"
+                android:shadowDx="0"
+                android:shadowDy="1"
+                android:shadowRadius="3"
+                android:text="0"
+                android:textColor="@color/gold_light"
+                android:textSize="22sp"
+                android:textStyle="bold"
+                app:autoSizeMaxTextSize="22sp"
+                app:autoSizeMinTextSize="11sp"
+                app:autoSizeTextType="uniform" />
+        </LinearLayout>
+
+        <!-- MINOR -->
+        <LinearLayout
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:gravity="center"
+            android:orientation="vertical">
+
+            <ImageView
+                android:layout_width="match_parent"
+                android:layout_height="64dp"
+                android:adjustViewBounds="true"
+                android:contentDescription="@string/app_name"
+                android:scaleType="fitCenter"
+                android:src="@drawable/banner_minor" />
+
+            <TextView
+                android:id="@+id/jpMinor"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="1dp"
+                android:fontFamily="serif"
+                android:gravity="center"
+                android:maxLines="1"
+                android:paddingHorizontal="2dp"
+                android:shadowColor="#CC000000"
+                android:shadowDx="0"
+                android:shadowDy="1"
+                android:shadowRadius="3"
+                android:text="0"
+                android:textColor="@color/gold_light"
+                android:textSize="22sp"
+                android:textStyle="bold"
+                app:autoSizeMaxTextSize="22sp"
+                app:autoSizeMinTextSize="11sp"
+                app:autoSizeTextType="uniform" />
+        </LinearLayout>
+
+        <!-- MINI -->
+        <LinearLayout
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:gravity="center"
+            android:orientation="vertical">
+
+            <ImageView
+                android:layout_width="match_parent"
+                android:layout_height="64dp"
+                android:adjustViewBounds="true"
+                android:contentDescription="@string/app_name"
+                android:scaleType="fitCenter"
+                android:src="@drawable/banner_mini" />
+
+            <TextView
+                android:id="@+id/jpMini"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="1dp"
+                android:fontFamily="serif"
+                android:gravity="center"
+                android:maxLines="1"
+                android:paddingHorizontal="2dp"
+                android:shadowColor="#CC000000"
+                android:shadowDx="0"
+                android:shadowDy="1"
+                android:shadowRadius="3"
+                android:text="0"
+                android:textColor="@color/gold_light"
+                android:textSize="22sp"
+                android:textStyle="bold"
+                app:autoSizeMaxTextSize="22sp"
+                app:autoSizeMinTextSize="11sp"
+                app:autoSizeTextType="uniform" />
+        </LinearLayout>
+    </LinearLayout>
+
+    <!-- ════════════ BOTTOM: slim control bar ════════════ -->
+    <LinearLayout
+        android:id="@+id/bottomBar"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:background="#BB000000"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingHorizontal="10dp"
+        android:paddingVertical="5dp"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toStartOf="@id/rightBar">
+
+        <!-- BALANCE chip -->
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:background="@drawable/chip_bg"
+            android:gravity="center"
+            android:orientation="vertical"
+            android:paddingHorizontal="12dp"
+            android:paddingVertical="5dp">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:fontFamily="serif"
+                android:text="@string/balance"
+                android:textColor="@color/gold"
+                android:textSize="10sp"
+                android:letterSpacing="0.08" />
+
+            <TextView
+                android:id="@+id/tvBalance"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:fontFamily="serif"
+                android:text="0"
+                android:textColor="@color/white"
+                android:textSize="16sp"
+                android:textStyle="bold" />
+        </LinearLayout>
+
+        <Space
+            android:layout_width="0dp"
+            android:layout_height="1dp"
+            android:layout_weight="1" />
+
+        <!-- BET: − value + -->
+        <ImageButton
+            android:id="@+id/btnBetMinus"
+            android:layout_width="38dp"
+            android:layout_height="38dp"
+            android:background="@drawable/circle_dark_selector"
+            android:contentDescription="@string/bet"
+            android:padding="8dp"
+            android:src="@drawable/ic_minus" />
+
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginHorizontal="6dp"
+            android:background="@drawable/chip_bg"
+            android:gravity="center"
+            android:minWidth="88dp"
+            android:orientation="vertical"
+            android:paddingHorizontal="10dp"
+            android:paddingVertical="5dp">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:fontFamily="serif"
+                android:text="@string/bet"
+                android:textColor="@color/gold"
+                android:textSize="10sp"
+                android:letterSpacing="0.08" />
+
+            <TextView
+                android:id="@+id/tvBet"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:fontFamily="serif"
+                android:text="0"
+                android:textColor="@color/white"
+                android:textSize="16sp"
+                android:textStyle="bold" />
+        </LinearLayout>
+
+        <ImageButton
+            android:id="@+id/btnBetPlus"
+            android:layout_width="38dp"
+            android:layout_height="38dp"
+            android:background="@drawable/circle_dark_selector"
+            android:contentDescription="@string/bet"
+            android:padding="8dp"
+            android:src="@drawable/ic_plus" />
+
+        <Space
+            android:layout_width="0dp"
+            android:layout_height="1dp"
+            android:layout_weight="1" />
+
+        <!-- WIN chip -->
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:background="@drawable/chip_bg"
+            android:gravity="center"
+            android:minWidth="80dp"
+            android:orientation="vertical"
+            android:paddingHorizontal="10dp"
+            android:paddingVertical="5dp">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:fontFamily="serif"
+                android:text="@string/win"
+                android:textColor="@color/gold"
+                android:textSize="10sp"
+                android:letterSpacing="0.08" />
+
+            <TextView
+                android:id="@+id/tvWin"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:fontFamily="serif"
+                android:text="0"
+                android:textColor="@color/green_win"
+                android:textSize="16sp"
+                android:textStyle="bold" />
+        </LinearLayout>
+    </LinearLayout>
+
+    <!-- ════════════ RIGHT: vertical button column ════════════ -->
+    <LinearLayout
+        android:id="@+id/rightBar"
+        android:layout_width="wrap_content"
+        android:layout_height="0dp"
+        android:gravity="center_horizontal|bottom"
+        android:orientation="vertical"
+        android:paddingEnd="6dp"
+        android:paddingBottom="6dp"
+        android:paddingTop="4dp"
+        android:background="#BB000000"
+        app:layout_constraintTop_toBottomOf="@id/jpBar"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintEnd_toEndOf="parent">
+
+        <ImageButton
+            android:id="@+id/btnAuto"
+            android:layout_width="44dp"
+            android:layout_height="44dp"
+            android:layout_marginBottom="6dp"
+            android:background="@drawable/circle_dark_selector"
+            android:contentDescription="@string/auto"
+            android:padding="9dp"
+            android:src="@drawable/ic_auto" />
+
+        <ImageButton
+            android:id="@+id/btnTurbo"
+            android:layout_width="44dp"
+            android:layout_height="44dp"
+            android:layout_marginBottom="10dp"
+            android:background="@drawable/circle_dark_selector"
+            android:contentDescription="@string/turbo"
+            android:padding="9dp"
+            android:src="@drawable/ic_turbo" />
+
+        <!-- Big spin button -->
+        <ImageButton
+            android:id="@+id/btnSpin"
+            android:layout_width="72dp"
+            android:layout_height="72dp"
+            android:background="@drawable/spin_button_selector"
+            android:contentDescription="@string/spin"
+            android:padding="15dp"
+            android:scaleType="fitCenter"
+            android:src="@drawable/ic_spin" />
+    </LinearLayout>
+
+    <!-- ════════════ CENTER: main slot panel (fills all remaining space) ════════════ -->
+    <FrameLayout
+        android:id="@+id/panel"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        android:layout_marginStart="2dp"
+        android:layout_marginEnd="2dp"
+        android:layout_marginTop="1dp"
+        android:layout_marginBottom="1dp"
+        app:layout_constraintTop_toBottomOf="@id/jpBar"
+        app:layout_constraintBottom_toTopOf="@id/bottomBar"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toStartOf="@id/rightBar">
+
+        <com.trainsprint.trainsprintgame.SlotView
+            android:id="@+id/slotView"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent" />
+
+        <!-- Bonus banner (Hold & Win) -->
+        <LinearLayout
+            android:id="@+id/bonusBanner"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="top|center_horizontal"
+            android:layout_marginTop="10dp"
+            android:background="@drawable/panel_bg"
+            android:orientation="vertical"
+            android:padding="10dp"
+            android:gravity="center"
+            android:visibility="gone">
+
+            <TextView
+                android:id="@+id/tvBonusTitle"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:fontFamily="serif"
+                android:text="@string/hold_and_win"
+                android:textColor="@color/gold_light"
+                android:textSize="20sp"
+                android:textStyle="bold"
+                android:letterSpacing="0.1" />
+
+            <TextView
+                android:id="@+id/tvBonusInfo"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:fontFamily="serif"
+                android:text=""
+                android:textColor="@color/white"
+                android:textSize="14sp" />
+        </LinearLayout>
+
+        <!-- Win banner -->
+        <TextView
+            android:id="@+id/winBanner"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center"
+            android:background="@drawable/panel_bg"
+            android:fontFamily="serif"
+            android:gravity="center"
+            android:paddingHorizontal="24dp"
+            android:paddingVertical="12dp"
+            android:text=""
+            android:textColor="@color/gold_light"
+            android:textSize="28sp"
+            android:textStyle="bold"
+            android:visibility="gone" />
+    </FrameLayout>
+
+    <!-- Settings gear (floating top-left, over jpBar) -->
+    <ImageButton
+        android:id="@+id/btnSettings"
+        android:layout_width="36dp"
+        android:layout_height="36dp"
+        android:layout_margin="6dp"
+        android:background="@drawable/circle_dark_selector"
+        android:contentDescription="@string/settings"
+        android:elevation="6dp"
+        android:padding="7dp"
+        android:scaleType="fitCenter"
+        android:src="@drawable/ic_settings"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toTopOf="parent" />
+
+</androidx.constraintlayout.widget.ConstraintLayout>

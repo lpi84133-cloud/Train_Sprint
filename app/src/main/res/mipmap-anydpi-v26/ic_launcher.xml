@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Proper adaptive launcher icon.
+  background: solid dark colour — fills corners under any mask shape.
+  foreground: Icon.png with ~14 % inset so the art is fully visible
+              inside the circle / squircle / teardrop safe zone.
+-->
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@color/launch_bg" />
+    <foreground android:drawable="@drawable/ic_launcher_foreground_inset" />
+</adaptive-icon>

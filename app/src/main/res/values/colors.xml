@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="black">#FF000000</color>
+    <color name="white">#FFFFFFFF</color>
+
+    <color name="gold">#FFF6C64B</color>
+    <color name="gold_light">#FFFFE9A8</color>
+    <color name="gold_dark">#FFB8860B</color>
+    <color name="bronze">#FF8A5A2B</color>
+
+    <color name="maroon">#FF3A0E0E</color>
+    <color name="maroon_deep">#FF2A0808</color>
+    <color name="panel_dark">#E60E0A08</color>
+
+    <color name="brass">#FFC79A3B</color>
+    <color name="red_accent">#FFB22222</color>
+    <color name="green_win">#FF37D67A</color>
+
+    <color name="ic_launcher_background">#1A1208</color>
+    <!-- Background for adaptive icon & Android 12+ splash — dark warm tone from Icon.png corners -->
+    <color name="launch_bg">#160C06</color>
+</resources>
