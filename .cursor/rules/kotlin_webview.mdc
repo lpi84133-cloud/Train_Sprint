@@ -1,0 +1,304 @@
+---
+description: WebView shell requirements for native Kotlin gray-part apps — User-Agent, safe-area, keyboard, redirects, file upload, autoplay, push routing, back navigation, offline detection. Read when implementing or fixing the StreamPortal WebView.
+globs: app/src/main/java/**/portal/*.kt,app/src/main/java/**/signal/*.kt
+alwaysApply: false
+---
+
+# Kotlin Gray-Part — WebView Shell Spec
+
+The WebView host (`StreamPortal`) must satisfy every TZ requirement below.
+
+---
+
+## WebSettings (baseline)
+
+```kotlin
+settings.apply {
+    javaScriptEnabled = true                 // sites need JS
+    domStorageEnabled = true                 // sessions / localStorage
+    allowFileAccess = true
+    allowContentAccess = true
+    mediaPlaybackRequiresUserGesture = false // inline autoplay video
+    mixedContentMode = MIXED_CONTENT_ALWAYS_ALLOW
+    cacheMode = LOAD_DEFAULT
+    setSupportMultipleWindows(false)         // see "target=_blank" below
+    javaScriptCanOpenWindowsAutomatically = true
+    userAgentString = buildUserAgent()       // see below
+}
+CookieManager.getInstance().apply {
+    setAcceptCookie(true)
+    setAcceptThirdPartyCookies(webView, true) // cookies / sessions
+}
+```
+
+Activity in manifest: `windowSoftInputMode="adjustResize"`,
+`hardwareAccelerated="true"`, `launchMode="singleTask"`,
+`configChanges="orientation|screenSize|keyboardHidden|uiMode"`,
+`screenOrientation="sensor"`.
+
+---
+
+## User-Agent
+
+- Must NOT reveal a WebView (`; wv`) and must reflect the real device.
+- For Zeus/Magma-style projects append the app identity suffix
+  `appid/<bundleId> appname/<AppNamePascalCase>` as the LAST segment, used by
+  BOTH the WebView and the OkHttp config client.
+
+```kotlin
+val base = "Mozilla/5.0 (Linux; Android ${Build.VERSION.RELEASE}; " +
+    "${Build.BRAND} ${Build.MODEL.replace(" ","_")} Build/${Build.ID}) " +
+    "AppleWebKit/537.36 (KHTML, like Gecko) " +
+    "Chrome/131.0.6778.135 Mobile Safari/537.36"
+return "$base appid/$bundleId appname/$appNameToken"
+```
+
+---
+
+## Safe area (notch / cutout) — required in BOTH orientations
+
+- Manifest/window: `LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES`.
+- Apply padding via `setOnApplyWindowInsetsListener`:
+  - **portrait** → top inset (status bar + top notch),
+  - **landscape** → left + right insets (side cameras).
+- Re-apply on `onConfigurationChanged` and after lock/unlock.
+
+The CSS injection in the page is a **separate** mechanism with a much narrower
+job than it looks. The native padding above already handles the cutout; all the
+CSS has to do is stop the page adding a *second* inset of its own through
+`env(safe-area-inset-*)`. So it zeroes the safe-area custom properties on
+`:root` — and touches nothing else.
+
+**The constraint is on properties, not on selectors.** `padding-left`,
+`padding-right` and `margin` must never be written, on any selector: those are
+what sites build their gutters with, and zeroing them on `html`/`body`/`#app`
+flattens the whole layout against both screen edges. `padding-top` is allowed
+only on chrome wrappers that add a status-bar offset of their own
+(`.app-header`, `.gameview-mobile-header`). Read pitfalls #10 before editing
+this — the earlier "fix" for it named the wrong culprit and shipped the bug for
+two generations.
+
+---
+
+## Keyboard must not cover inputs
+
+**Read `kotlin_keyboard.mdc` and implement what it says.** Do not improvise
+here — `adjustResize` plus a JS `scrollIntoView` looks correct in a five-minute
+test and jitters visibly in real use, because the engine and the injection then
+scroll the same page and their corrections add up.
+
+The shape of the solution: keep `adjustResize` in the manifest so the animation
+callback fires, strip the IME insets before they reach the WebView, and slide
+the view with `translationY` by an amount computed from the field position the
+page reports over a JS bridge, clamped to the height the keyboard settles at.
+
+---
+
+## Loading session and the cover
+
+Two different mechanisms, never mixed up:
+
+- **The loading screen (splash + bar)** belongs to the launch. One per launch,
+  shown by the router, filled to 100% before anything replaces it. It must
+  never reappear: not after the notification-permission screen, not for a push
+  URL on a live shell, not between redirect hops.
+- **The cover** belongs to the WebView, and it covers **one** thing: the
+  session's first page, where all that sits underneath is an empty view. A
+  scrim plus a small spinner, raised in `onPageStarted` while
+  `firstPageSettled` is false, dropped a beat after `onPageFinished`.
+
+Everything else navigates uncovered. A redirect hop, an in-page navigation, a
+retry — the page the user is already reading stays on screen until the next one
+commits, which is both what a browser does and what the user asked for the
+first time they saw a scrim flash on every hop (pitfalls #33). Covering hops
+looks like polish and reads as the app freezing.
+
+Back the cover with a timeout so a page that never reports back cannot hold the
+screen for good, and drop it on the paths that never produce a finished page —
+a load that turns into a download, an unsupported scheme handed to the system,
+a load that failed with no retry left. **No branch of `onReceivedError` may end
+without either navigating somewhere or dropping the cover** (pitfalls #31).
+
+**Never snapshot the WebView to build a freeze-frame.** `view.draw(canvas)` on
+a hardware-accelerated WebView yields a black bitmap, which is exactly the
+"black screen during redirects" the client reported. A scrim over the live view
+costs nothing and cannot be black.
+
+---
+
+## Redirect loop (ERR_TOO_MANY_REDIRECTS)
+
+Chromium gives up after 20 hops; affiliate chains are routinely longer, so this
+is an ordinary condition to resume from, not a failure to report.
+
+**Keep two separate URL fields.** They are not interchangeable and conflating
+them is pitfalls #30:
+
+| Field | Written by | Read by |
+|---|---|---|
+| `deepestHop` | `shouldOverrideUrlLoading` (main frame) **and** `onPageStarted` | the redirect retry |
+| `lastMainFrameUrl` | `onPageFinished` only | renderer recovery, offline return URL |
+
+The retry resumes from `deepestHop`. Resuming from the last *settled* page
+restarts the chain into the same loop and spends the budget on nothing. Both
+write sites matter: `shouldOverrideUrlLoading` does not see every server-side
+30x, and `onPageStarted` gives the URL the engine actually committed to.
+
+**Post the retry, never call `loadUrl` from inside the callback.** The engine
+is still unwinding the failed navigation and defers a re-entrant load by
+seconds — which then looks like a slow partner rather than a bug in the shell.
+`view.postDelayed({ view.loadUrl(resumeAt) }, 60L)`.
+
+**Give the exhausted budget somewhere to go.** `-9` is not a network error, so
+falling through does nothing at all (pitfalls #31). Retry the configured entry
+point once, then drop the cover and hand the page back.
+
+Two flags make the retry work, and both were bugs before they were flags:
+
+- `loadFailed`, set in `onReceivedError` and cleared in `onPageStarted`. A
+  failed load still reaches `onPageFinished`, with the error page committed. If
+  that path resets the retry counter and records the URL as settled, the budget
+  never runs down and the error page is handed to the user.
+- `retryPending`, set while a reload is queued, so nothing treats the gap as a
+  settled page.
+
+---
+
+## Renderer crashes
+
+`onRenderProcessGone` fires when the renderer dies; returning `false` kills the
+app. Return `true`, destroy the dead view, build a fresh WebView with the same
+settings, re-bind the keyboard pan to it, and reload the last settled URL. Cap
+the recoveries so a page that kills the renderer on sight cannot loop.
+
+---
+
+## shouldOverrideUrlLoading routing
+
+Whitelist the web schemes, keep them in the WebView, and hand **everything
+else** to the system. Partner pages link to banks, wallets, messengers and
+stores — `paytmmp:`, `upi:`, `tg:`, `whatsapp:` and dozens more — and a WebView
+handed one of those shows `ERR_UNKNOWN_URL_SCHEME`. Enumerating the schemes you
+happen to know is a losing game; invert the test.
+
+```kotlin
+val scheme = url.substringBefore(':').lowercase()
+when {
+    scheme in setOf("http", "https", "about", "data", "blob", "file", "javascript") -> {
+        if (isMainFrame) lastMainFrame = url
+        false                                  // stays in the WebView
+    }
+    scheme == "intent" -> { openIntentUri(url); true }
+    else -> { openExternally(url); true }      // any app link
+}
+```
+
+`intent://` URIs need their own handling: parse with
+`Intent.parseUri(url, URI_INTENT_SCHEME)`, clear `component`/`selector`, add
+`CATEGORY_BROWSABLE` and `FLAG_ACTIVITY_NEW_TASK`, try it, then retry with
+`package = null` (the named app may be missing while another handles the
+scheme), and finally load `browser_fallback_url` if the URI carries one.
+
+When the user comes back, they must land on the page they left — no error page.
+An `ERROR_UNSUPPORTED_SCHEME` reaching `onReceivedError` means the URL was
+already handed to the system, so just drop the cover and leave the page alone.
+
+---
+
+## target="_blank" / window.open
+
+Leave `setSupportMultipleWindows(false)`. The WebView then loads
+`window.open` / `target="_blank"` navigations in place, which is what a shell
+wants, and no external Chrome tab is involved.
+
+Do **not** enable multiple windows and answer `onCreateWindow` with the same
+WebView as the transport — `transport.webView = view` throws
+`IllegalArgumentException: Parent WebView cannot host its own popup window` and
+takes the app down. It happened on the third page of the client's test site. If
+a project genuinely needs popups, the transport has to be a *different*,
+throwaway WebView whose first navigation is forwarded to the main one.
+
+---
+
+## File upload (no storage permission)
+
+`WebChromeClient.onShowFileChooser` → launch `params.createIntent()` via an
+`ActivityResultContracts.StartActivityForResult` launcher, return the result
+with `FileChooserParams.parseResult`. Camera/gallery work through the chooser.
+
+---
+
+## Back navigation
+
+`OnBackPressedCallback`: if `webView.canGoBack()` → `goBack()`, else do nothing
+(back on the first page must NOT close the app). System back + gestures both
+route through this.
+
+---
+
+## Offline detection (see pitfalls #11)
+
+- `NetWire.connectivityFlow` via `registerDefaultNetworkCallback`
+  (`onLost`/`onUnavailable` → false) collected in the WebView screen.
+- A ~4s heartbeat that checks `isConnected()` for the "page already loaded, then
+  internet dropped" case.
+- On offline: blank the WebView (`about:blank`) then open OfflinePortal with the
+  current URL as the return target. Retry reloads it (handle in `onNewIntent`).
+
+---
+
+## Push URL into the WebView (one-time)
+
+### Two delivery shapes, and only one of them reaches your service
+
+This is the single most-missed thing in the push path (pitfalls #32). Which
+code runs on a notification tap depends on the **payload**, not on your code:
+
+| Payload | App foregrounded | App backgrounded or killed |
+|---|---|---|
+| `data` only | `PushRelay.onMessageReceived` | `PushRelay.onMessageReceived` |
+| contains `notification` | `PushRelay.onMessageReceived` | **Firebase draws it. Your service never runs.** |
+
+In the bottom-right cell the tap opens the plain launcher intent, and the
+`data` payload arrives as raw string extras — `url`, `link` — with none of your
+own extras and no `from_push` flag. A router that reads only its own extras
+drops the link silently and reopens the shell on the saved page, which looks
+exactly like "push URLs don't work" while foreground tests pass.
+
+So the router resolves a push URL from **both** shapes, in `onCreate` and in
+`onNewIntent`. The NATIVE lock and `UrlGuard` apply after the resolver,
+unchanged. Agree the payload shape with whoever sends the pushes: a link that
+lives only inside the `notification` block cannot be read at all.
+
+### The rest of the contract
+
+- `PushBus.onWarmUrl` is set in `StreamPortal.onStart`, cleared in
+  `onStop`/`onDestroy`.
+- `PushRelay.onMessageReceived`: if `PushBus.onWarmUrl != null` and the payload
+  has a `url` → call it (loads into the live WebView) and DON'T show a
+  notification / DON'T persist. Otherwise save `coldPushUrl` and post a
+  notification.
+- Cold start: `WelcomePortal` consumes `coldPushUrl` BEFORE the state machine
+  and opens the WebView on it. The loading bar still fills first — a cold push
+  is a launch like any other.
+- Warm tap while the shell is alive: the launcher activity must not draw
+  anything. No content view, no splash, no transition — hand the URL to the
+  live shell over the bus, `finish()`, and `overridePendingTransition(0, 0)`.
+  The user sees the page they left, then the pushed URL when it loads.
+  Two details make this work: the bus needs a **queue** as well as a callback
+  (the shell clears its callback in `onStop`, and a background tap arrives
+  exactly then — queue it and consume it in `onStart`), and the notification's
+  `PendingIntent` must **not** carry `FLAG_ACTIVITY_CLEAR_TOP`, which would
+  destroy the very shell being handed to.
+- Never persist a push URL beyond its one-time use.
+
+---
+
+## ProGuard
+
+Anything reached from the page needs keeping, and the failure is silent —
+release works everywhere except the one feature that depends on the bridge:
+
+```
+-keepclassmembers class * { @android.webkit.JavascriptInterface <methods>; }
+```

@@ -1,0 +1,82 @@
+# ─────────────────────────────────────────────────────────────────────────────
+#  Gray part — per-project configuration.
+#
+#  Copy this file to  gray.properties  (gitignored) and fill it in. Everything
+#  the gray flow needs lives here and nowhere else: no secret, no identifier and
+#  no tunable is hand-edited in Kotlin any more.
+#
+#  The build reads this file, derives the whole per-project fingerprint from
+#  gray.seed, encodes the secrets with the derived codec, and emits the result
+#  into BuildConfig. Two apps with different seeds share no string, no storage
+#  key, no constant and no encoded array.
+#  See .cursor/rules/kotlin_fingerprint.mdc.
+#
+#  Without gray.properties the build still works: it falls back to the values
+#  below, the secrets resolve to empty, and the app opens the native part.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ══ 1. THE SEED ══════════════════════════════════════════════════════════════
+# The single most important line in this file. Every derived identifier, key,
+# sentinel, channel id, timeout and cipher parameter comes from it.
+#
+#   * MUST be different for every app in the portfolio.
+#   * MUST never be reused, not even with one character changed.
+#   * Generate a fresh one with:  gradlew graySeed
+#   * Changing it after release rotates the storage key names, so an upgrading
+#     install is seen as a first launch. Pick it once, before the first build.
+gray.seed = CHANGE-ME-EVERY-PROJECT
+
+# Which of the three interchangeable codec shapes Secrets.kt implements.
+# rebrand.py rewrites both this line and the decoder body together; the build
+# fails if the two disagree, so never edit it by hand.
+gray.codecVariant = 1
+
+# ══ 2. IDENTITY ══════════════════════════════════════════════════════════════
+gray.bundleId    = com.trainsprint.trainsprintgame
+gray.appLabel    = Gray Shell
+gray.versionCode = 1
+gray.versionName = 1.0.0
+
+# ══ 3. BACKEND + SDK CREDENTIALS ═════════════════════════════════════════════
+# Encoded into BuildConfig at build time. Never appear in the APK in the clear
+# and never appear in git.
+gray.configEndpoint  =
+gray.appsFlyerKey    =
+gray.firebaseProject =
+gray.gcdBase         = https://gcdsdk.appsflyer.com/install_data/v4.0/
+
+# ══ 4. URL ALLOWLIST ═════════════════════════════════════════════════════════
+# Host suffixes the app will accept a URL for from the config endpoint or from
+# a push payload. A host matches when it equals an entry or is a subdomain of
+# one. This is the gate on the two places an outsider can hand the shell a URL.
+#
+# It deliberately does NOT gate navigation inside the WebView: an affiliate
+# chain legitimately crosses hosts nobody can enumerate in advance, and gating
+# it would break the product.
+#
+# Empty = accept anything. The build prints a warning; releasing like this is a
+# review risk (an app that will load any URL a server names).
+gray.allowedHosts =
+
+# ══ 5. ONELINK ═══════════════════════════════════════════════════════════════
+# AppsFlyer OneLink host for the deep-link intent-filter. Leave the default and
+# gray.oneLinkVerify=false when the app has no OneLink; the filter then exists
+# but matches nothing.
+gray.oneLinkHost   = nolink.invalid
+gray.oneLinkVerify = false
+
+# ══ 6. USER-AGENT ════════════════════════════════════════════════════════════
+# The shell presents itself as Chrome on Android. Scaffolding and version
+# fragments are encoded like any other secret, so no sibling app shares the
+# literal.
+#
+# uaAppSuffix appends "appid/<bundleId> appname/<token>" — some partner
+# backends route the cashier on it. No honest browser writes it, so leave it
+# off unless the partner genuinely requires it.
+gray.uaAppSuffix = false
+gray.uaAppToken  = GrayShell
+
+# ══ 7. DEBUG ═════════════════════════════════════════════════════════════════
+# Set to a URL to skip attribution and the backend and open the WebView
+# directly. Ignored in release builds — the constant is compiled out.
+gray.debugForceUrl =

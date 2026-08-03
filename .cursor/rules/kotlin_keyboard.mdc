@@ -1,0 +1,375 @@
+---
+description: Keyboard handling for the gray-part WebView — why adjustResize plus scrollIntoView always jitters, and the pan-the-WebView solution that replaces it. Read when the focused input is covered by the keyboard, or when content jumps, overshoots or drifts back as the keyboard opens.
+globs: app/src/main/java/**/portal/*.kt,app/src/main/java/**/stage/*.kt
+alwaysApply: false
+---
+
+# Kotlin Gray-Part — Keyboard
+
+The requirement is one line — the focused field must not end up under the
+keyboard — and it took more attempts than anything else in the flow. Read this
+before writing a single line of keyboard code; every simpler approach listed
+under "what does not work" was tried on a real device and rejected by the
+client, in that order.
+
+---
+
+## What does not work
+
+**`adjustResize` and let the page cope.** Taking height from a WebView shrinks
+the page's visual viewport, and the engine answers with a burst of work in one
+go: it re-lays out, scrolls the focused field into view against the layout it
+had a moment earlier, then clamps that scroll to the layout that finally lands.
+The last two steps disagree, and their disagreement is the visible flick.
+
+**`adjustResize` plus a JS `scrollIntoView` on `focusin`.** Now two parties
+scroll the same page. The engine's own correction and the injected one add up,
+the content shoots past the field and settles back a frame or two later. Using
+`block:'center'`, `behavior:'auto'`, or a delay only changes how far it
+overshoots.
+
+**Animated IME padding on the container.** Same doubling, with easing on top of
+it. This one was reported as *worse* than doing nothing.
+
+**Panning natively while the engine still sees the keyboard.** The engine's
+own shift is not a constant: on one device, on the very same field, it moved
+the page 132 px on one opening and 737 px on the next. Anything added on top
+inherits that randomness.
+
+Everything above shares one cause: **two things moving the page at once.** The
+fix is not better easing, it is making sure only one of them moves it.
+
+---
+
+## What works: pan the view, and blind the engine
+
+1. **Never resize.** The WebView keeps its full height; it is slid with
+   `translationY`. The page never reflows, and the move costs one compositor
+   frame. The strip left bare at the bottom is always shorter than the
+   keyboard, so the keyboard covers it.
+2. **Keep the IME insets away from the WebView.** A
+   `WindowInsetsAnimationCompat.Callback` with `DISPATCH_MODE_STOP` on the
+   window root, plus an insets listener that rebuilds the insets with
+   `Type.ime()` set to `Insets.NONE` and invisible. Now the engine has nothing
+   to react to and the native pan is the only hand on the wheel.
+3. **Ask the page where the field is,** in device pixels, over a
+   `@JavascriptInterface`. Not as a fraction of the viewport — that viewport is
+   exactly the thing that can change under the measurement.
+4. **Ride the keyboard up.** `onProgress` gives the IME height every frame;
+   the pan is recomputed and assigned directly (no animator) each time, so it
+   moves in step with the keyboard rather than chasing it.
+5. **Clamp to the height the keyboard will actually settle at** — see below,
+   this is the part that is easy to miss and produces the last remaining
+   "content flies up and comes back".
+
+The container itself must then apply **cutout padding only** and leave bottom
+padding at zero. Any IME padding left in the container fights the pan.
+
+---
+
+## The settled-height trap
+
+Mid-animation the system reports IME heights well above the one it settles on.
+Measured on a Mi 9T: **913 against a final 833** upright, **771 against 683** on
+its side. A pan that follows those to the letter sails past its mark and drops
+back at the very end — a small, sharp jerk, and the last one to survive every
+other fix.
+
+`bounds.upperBound` from `onStart` is not the answer either: it reported the
+correct 833 on the first opening of an orientation and a useless 913 on every
+later one.
+
+The only figure that never lied is a height an earlier opening actually came to
+rest at. So:
+
+- remember it **per orientation**, and **persist it** (SharedPreferences), so
+  even the first opening of a session is exact;
+- clamp every mid-animation height to it;
+- fall back to `upperBound` only when nothing is on record yet — which, with
+  persistence, is once per orientation per install;
+- reset the in-memory copy on rotation and re-read the stored value for the new
+  orientation;
+- ignore a stored height that is not smaller than the window (it belongs to
+  another device or another window).
+
+---
+
+## Aiming
+
+- **Ordinary field:** aim at its top plus ~96 dp, not its bottom. Hauling a
+  long box up by its foot takes its head, and the caret with it, off screen.
+- **Rich editor (`contentEditable`):** measure the caret rect from the
+  selection, not the editor box.
+- **Cross-origin iframe** (sign-in forms often live in one): the frame's own
+  rectangle is all there is. Aim at its bottom, but never far enough to push
+  its top off screen — the field could be up there.
+- Add ~10 CSS px of breathing room under the target.
+- Re-read the field position ~200 ms after focus (the page may move it) and
+  ~140 ms after the animation ends. Both readings feed the same absolute
+  target, so a later one corrects an earlier one instead of adding to it.
+- Clear the stored position on every `onPageStarted` and on rotation.
+
+---
+
+## Reference implementation
+
+Adapt the names to the project's fingerprint; the structure is the point.
+
+```kotlin
+class KeyboardPan(private val host: View, private val vault: DataVault) {
+
+    private var web: WebView? = null
+    private var fieldTop = -1f          // device px down the WebView, -1 = unknown
+    private var fieldBottom = -1f
+    private var framed = false          // position is a frame's, not a field's
+    private var keyboard = 0
+    private var riding = false
+    private var declaredKb = 0
+    private var settledKb = 0
+
+    private val probe = Runnable {
+        web?.evaluateJavascript("window.__kbReport && window.__kbReport();", null)
+    }
+
+    fun install() {
+        ViewCompat.setOnApplyWindowInsetsListener(host) { _, insets ->
+            if (!riding) {
+                settle(insets.getInsets(WindowInsetsCompat.Type.ime()).bottom)
+                apply(animated = keyboard > 0)
+                if (keyboard > 0) ask(SETTLE_MS)
+            }
+            withoutKeyboard(insets)
+        }
+        ViewCompat.setWindowInsetsAnimationCallback(host,
+            object : WindowInsetsAnimationCompat.Callback(DISPATCH_MODE_STOP) {
+                override fun onPrepare(a: WindowInsetsAnimationCompat) {
+                    if (a.typeMask and WindowInsetsCompat.Type.ime() != 0) riding = true
+                }
+                override fun onStart(
+                    a: WindowInsetsAnimationCompat,
+                    bounds: WindowInsetsAnimationCompat.BoundsCompat
+                ): WindowInsetsAnimationCompat.BoundsCompat {
+                    if (a.typeMask and WindowInsetsCompat.Type.ime() != 0)
+                        declaredKb = bounds.upperBound.bottom
+                    return bounds
+                }
+                override fun onProgress(
+                    insets: WindowInsetsCompat,
+                    running: MutableList<WindowInsetsAnimationCompat>
+                ): WindowInsetsCompat {
+                    if (riding) {
+                        rise(insets.getInsets(WindowInsetsCompat.Type.ime()).bottom)
+                        apply(animated = false)
+                    }
+                    return insets
+                }
+                override fun onEnd(a: WindowInsetsAnimationCompat) {
+                    if (a.typeMask and WindowInsetsCompat.Type.ime() == 0) return
+                    riding = false
+                    declaredKb = 0
+                    ViewCompat.requestApplyInsets(host)
+                    if (keyboard > 0) ask(SETTLE_MS) else apply(animated = false)
+                }
+            })
+        ViewCompat.requestApplyInsets(host)
+    }
+
+    /** For every WebView the shell puts on screen, replacements included. */
+    fun bind(view: WebView) {
+        web = view
+        forget()
+        view.translationY = 0f
+        view.addJavascriptInterface(Bridge(), BRIDGE)
+    }
+
+    fun forget() {                       // new page: nothing is focused
+        host.removeCallbacks(probe)
+        fieldTop = -1f; fieldBottom = -1f; framed = false
+        apply(animated = false)
+    }
+
+    fun remeasure() {                    // rotation: old pixels, other keyboard
+        forget()
+        settledKb = 0
+        if (keyboard > 0) ask(SETTLE_MS)
+    }
+
+    private fun ask(delay: Long) {
+        host.removeCallbacks(probe); host.postDelayed(probe, delay)
+    }
+
+    private fun settle(height: Int) {
+        keyboard = height
+        if (height <= 0 || height == settledKb) return
+        settledKb = height
+        vault.rememberKeyboardRest(portrait(), height)
+    }
+
+    private fun rise(height: Int) {
+        val rest = resting()
+        keyboard = if (rest > 0) minOf(height, rest) else height
+    }
+
+    private fun resting(): Int {
+        if (settledKb <= 0) {
+            val kept = vault.keyboardRest(portrait())
+            if (kept in 1 until host.height) settledKb = kept
+        }
+        return if (settledKb > 0) settledKb else declaredKb
+    }
+
+    private fun portrait(): Boolean =
+        host.resources.configuration.orientation != Configuration.ORIENTATION_LANDSCAPE
+
+    private fun withoutKeyboard(insets: WindowInsetsCompat): WindowInsetsCompat =
+        runCatching {
+            WindowInsetsCompat.Builder(insets)
+                .setInsets(WindowInsetsCompat.Type.ime(), Insets.NONE)
+                .setVisible(WindowInsetsCompat.Type.ime(), false)
+                .build()
+        }.getOrDefault(insets)
+
+    private fun apply(animated: Boolean) {
+        val view = web ?: return
+        val target = -offset(view)
+        view.animate().cancel()
+        if (animated && view.translationY != target)
+            view.animate().translationY(target).setDuration(PAN_MS).start()
+        else view.translationY = target
+    }
+
+    private fun offset(view: View): Float {
+        val height = keyboard
+        val span = view.height
+        if (height <= 0 || span <= 0 || fieldBottom < 0f) return 0f
+        val aim: Float
+        val ceiling: Float
+        if (framed) {
+            aim = fieldBottom
+            ceiling = minOf(height.toFloat(), maxOf(0f, fieldTop))
+        } else {
+            aim = minOf(fieldBottom, fieldTop + HEAD_DP * view.resources.displayMetrics.density)
+            ceiling = height.toFloat()
+        }
+        return (aim - (span - height)).coerceIn(0f, ceiling)
+    }
+
+    private inner class Bridge {
+        @JavascriptInterface
+        fun focus(frame: Boolean, top: Double, bottom: Double) {
+            val view = web ?: return
+            view.post {
+                framed = frame
+                fieldTop = top.toFloat()
+                fieldBottom = bottom.toFloat()
+                if (keyboard > 0) apply(animated = !riding)
+            }
+        }
+    }
+
+    private companion object {
+        const val BRIDGE = "KbPan"
+        const val MARGIN_CSS = 10        // breathing room under the field
+        const val HEAD_DP = 96f          // how much of a tall field must stay visible
+        const val SETTLE_MS = 140L       // grace for the page's own scrolling
+        const val PAN_MS = 160L
+    }
+}
+```
+
+The injected script, evaluated on every `onPageFinished` (and re-injected on
+in-page navigation):
+
+```js
+(function(){
+  if (window.__kb) return; window.__kb = true;
+
+  function editable(el){
+    if (!el) return false;
+    if (el.tagName === 'INPUT') {
+      var t = (el.type || 'text').toLowerCase();
+      return ['checkbox','radio','button','submit','reset','file','range','image','color']
+             .indexOf(t) < 0;
+    }
+    return el.tagName === 'TEXTAREA' || el.isContentEditable === true;
+  }
+
+  function box(el, win){
+    if (el.isContentEditable) {                 // the caret, not the editor
+      try {
+        var s = win.getSelection();
+        if (s && s.rangeCount) {
+          var r = s.getRangeAt(0).getBoundingClientRect();
+          if (r && r.height > 0) return r;
+        }
+      } catch(e) {}
+    }
+    return el.getBoundingClientRect();
+  }
+
+  function locate(){                            // descends into readable frames
+    var el = document.activeElement, win = window, off = 0, depth = 0;
+    while (el && (el.tagName === 'IFRAME' || el.tagName === 'FRAME') && depth++ < 4) {
+      var outline = el.getBoundingClientRect(), doc = null;
+      try { doc = el.contentDocument; } catch(e) { doc = null; }
+      var inner = doc ? doc.activeElement : null;
+      if (!inner || inner === doc.body)
+        return { frame:true, top: off + outline.top, bottom: off + outline.bottom };
+      watch(doc);
+      win = el.contentWindow || win;
+      off += outline.top;
+      el = inner;
+    }
+    if (!editable(el)) return null;
+    var r = box(el, win);
+    return { frame:false, top: off + r.top, bottom: off + r.bottom };
+  }
+
+  function report(){
+    var at = locate(); if (!at) return;
+    var vv = window.visualViewport;
+    var lift = vv ? vv.offsetTop : 0;                     // engine's own shift, if any
+    var px = (window.devicePixelRatio || 1) * ((vv && vv.scale) ? vv.scale : 1);
+    try { KbPan.focus(at.frame, (at.top - lift) * px, (at.bottom - lift + 10) * px); }
+    catch(e) {}
+  }
+
+  function kick(){ report(); setTimeout(report, 200); }   // page may move the field
+
+  var queued = false;                                     // belt and braces
+  function soon(){
+    if (queued) return; queued = true;
+    var run = function(){ queued = false; report(); };
+    window.requestAnimationFrame ? requestAnimationFrame(run) : setTimeout(run, 16);
+  }
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener('resize', soon);
+    window.visualViewport.addEventListener('scroll', soon);
+  }
+
+  function watch(doc){
+    try { if (!doc || doc.__kb) return; doc.__kb = true;
+          doc.addEventListener('focusin', kick, true); } catch(e) {}
+  }
+  window.__kbReport = report;
+  watch(document);
+})();
+```
+
+---
+
+## Wiring checklist
+
+- Manifest keeps `windowSoftInputMode="adjustResize"` — the window still needs
+  to be told about the IME so the animation callback fires; the WebView just
+  never hears about it.
+- `install()` once on the window root; `bind()` on every WebView, including one
+  recreated after a renderer crash.
+- `forget()` in `onPageStarted`; `remeasure()` in `onConfigurationChanged`.
+- Container padding: cutout only, bottom zero.
+- ProGuard: `-keepclassmembers class * { @android.webkit.JavascriptInterface <methods>; }`
+  or the bridge silently disappears in release.
+- Log the telemetry during bring-up: field top/bottom, IME height, view span,
+  riding flag, resulting pan. The numbers in this file were only findable that
+  way, and the tell is simple — the pan reported mid-animation must equal the
+  pan reported after it.

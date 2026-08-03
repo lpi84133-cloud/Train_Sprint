@@ -1,7 +1,19 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+  The ThemeCore.* styles below hold every real attribute, and the themes the
+  manifest actually names are thin shells over them.
+
+  The reason is that values-v31/themes.xml re-declares Theme.TrainSprint and
+  Theme.App to add the Android 12+ splash attributes, and a re-declared style
+  replaces its twin outright instead of merging with it. Anything written
+  directly on those two names is therefore absent on Android 12+ — which is
+  nearly every device — and their children inherit the gap. Keeping the
+  substance one level up, on a name that has no v31 twin, is what lets both
+  variants stand on the same base.
+-->
 <resources xmlns:tools="http://schemas.android.com/tools">
 
-    <style name="Theme.TrainSprint" parent="Theme.Material3.Dark.NoActionBar">
+    <style name="ThemeCore.TrainSprint" parent="Theme.Material3.Dark.NoActionBar">
         <item name="colorPrimary">@color/gold</item>
         <item name="colorOnPrimary">@color/black</item>
         <item name="android:windowBackground">@color/maroon_deep</item>
@@ -9,9 +21,42 @@
         <item name="android:navigationBarColor">@color/black</item>
     </style>
 
-    <style name="Theme.TrainSprint.Fullscreen" parent="Theme.TrainSprint">
+    <style name="Theme.TrainSprint" parent="ThemeCore.TrainSprint" />
+
+    <style name="Theme.TrainSprint.Game" parent="Theme.TrainSprint">
         <item name="android:windowFullscreen">true</item>
         <item name="android:windowContentTransitions">true</item>
+    </style>
+
+    <!-- ══ Gray-part themes ══ -->
+
+    <style name="ThemeCore.App" parent="Theme.AppCompat.NoActionBar">
+        <item name="android:windowBackground">@color/bg_dark</item>
+        <item name="android:statusBarColor">@color/bg_dark</item>
+        <item name="android:navigationBarColor">@color/bg_dark</item>
+    </style>
+
+    <style name="Theme.App" parent="ThemeCore.App" />
+
+    <style name="Theme.App.CabView" parent="Theme.App">
+        <item name="android:windowFullscreen">true</item>
+        <item name="android:windowContentOverlay">@null</item>
+    </style>
+
+    <!--
+        WebView host theme. Disables the launch-preview window so no white/system
+        flash is visible while the WebView initialises or when the user navigates
+        away from a page (see kotlin_rl_pitfalls.mdc #8).
+    -->
+    <style name="Theme.App.Stream" parent="Theme.App">
+        <item name="android:windowFullscreen">true</item>
+        <item name="android:windowContentOverlay">@null</item>
+        <item name="android:windowBackground">@android:color/black</item>
+        <item name="android:windowIsTranslucent">false</item>
+        <item name="android:windowAnimationStyle">@null</item>
+        <item name="android:windowDisablePreview">true</item>
+        <item name="android:statusBarColor">@android:color/black</item>
+        <item name="android:navigationBarColor">@android:color/black</item>
     </style>
 
 </resources>

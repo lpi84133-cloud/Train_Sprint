@@ -1,0 +1,297 @@
+---
+description: Launch pipeline for native Kotlin gray-part apps — when AppsFlyer may be started, the offline first-launch contract, what may be persisted as the mode, and the exact log evidence that proves the flow works. Read before touching the Application class, the launcher/router activity or the attribution wrapper.
+globs: app/src/main/java/**/startup/*.kt,app/src/main/java/**/reach/*.kt,app/src/main/java/**/wire/*.kt
+alwaysApply: false
+---
+
+# Kotlin Gray-Part — Launch Flow & Attribution Contract
+
+Everything here was paid for with failed builds on a real device. The routing
+tree in `kotlin_gray_guide.mdc` says *what* the app decides; this file says
+*when* each part of the machinery may run, and it is the part that goes wrong.
+
+The single sentence to keep: **attribution is asked for exactly once per
+install, and the app only gets one chance to ask it properly.** Every bug below
+is some variation of asking too early, asking from the wrong place, or writing
+down an answer that was never given.
+
+---
+
+## 1. Starting AppsFlyer: two strokes, never one
+
+`init` and `start` do different jobs and belong in different places.
+
+| Call | Where | Why there |
+|---|---|---|
+| `subscribeForDeepLink` + `init(key, listener, appContext)` | `Application.onCreate` | Registers the conversion listener and the activity-lifecycle callbacks the SDK uses to notice the app is in the foreground. Sends nothing. |
+| `start(activity)` | Router activity, **after** connectivity is confirmed | This is the call that puts the install on the wire and triggers the conversion callback. |
+
+```kotlin
+// Application.onCreate — introductions only, not a byte on the wire.
+fun prime() {
+    if (primed) return
+    primed = true
+    val key = Blueprint.trackerKey()
+    if (key.isBlank()) { finish(emptyMap()); deepLink.complete(Unit); return }
+    runCatching {
+        AppsFlyerLib.getInstance().apply {
+            subscribeForDeepLink(deepLinkListener)   // before init, always
+            init(key, conversionListener, ctx.applicationContext)
+        }
+    }.onFailure { finish(emptyMap()); deepLink.complete(Unit) }
+}
+
+// Router, once a link is confirmed. `host` is the Activity, and that matters.
+fun ignite(host: Activity) {
+    prime()
+    if (started || Blueprint.trackerKey().isBlank()) return
+    started = true
+    runCatching { AppsFlyerLib.getInstance().start(host) }
+        .onFailure { finish(emptyMap()); deepLink.complete(Unit) }
+}
+```
+
+### Why `init` cannot move out of the Application
+
+The SDK finds out that the app is in the foreground from
+`ActivityLifecycleCallbacks` it registers during `init`. Register them while an
+activity is **already resumed** and the SDK misses the event: it queues the
+launch and sends it at the *next* activity transition. In a gray app the next
+activity is the native game — which means the conversion arrives roughly half a
+minute later, long after the routing decision was made and written down.
+
+Measured on device, with `init`+`start` both called from the router:
+
+```
+11:57:58  AppsFlyer started
+          ...30 s of nothing...
+11:58:28  conversion={}                        ← gave up, went native
+11:58:30  onBecameForeground → "Sending first launch for this session!"
+11:58:34  onConversionDataSuccess: af_status=Non-organic   ← the right answer, 6 s too late
+```
+
+The SDK's own telemetry named the gap: `"first_launch":{"init_to_fg":32239}`.
+
+### Why `start` must be handed the Activity
+
+AppsFlyer's integration guide, verbatim: *"If the app calls `start` from an
+Activity, it should pass the Activity Context to the SDK. Failing to pass the
+activity context will not trigger the SDK, thus losing attribution data and
+in-app events."* `start(applicationContext)` from inside an activity is the
+same 30-second hang as above.
+
+This split is AppsFlyer's own documented "deferred start" pattern, the one
+written for consent dialogs. A connectivity gate is the same shape of problem,
+so the same shape of solution applies.
+
+---
+
+## 2. Never start AppsFlyer without a link
+
+An SDK started offline reaches for its servers, misses, and calls
+`onConversionDataFail` within milliseconds. That empty answer is **final for
+the session**: a `CompletableDeferred` completes once, and the SDK will not
+redo a conversion it considers settled. The user then turns Wi-Fi on, the
+router asks again, gets the cached empty map back in two milliseconds, sends a
+body with no attribution, and the backend — correctly — answers 404. A paid
+install is filed as organic and, if the mode is persisted, stays that way for
+the life of the install.
+
+The rule: **the connectivity check runs before `start`, always, on every path.**
+Nothing else in the launch may reorder those two.
+
+Defence in depth, in the order they should be tried:
+
+1. **Gate.** `start` only after connectivity is confirmed. Fixes the cause.
+2. **Re-ask.** If a previous attempt completed *empty*, replace the deferred
+   and call `start(activity)` again. Guard it so an attempt still in flight is
+   left alone and a non-empty answer (organic counts as an answer) is kept —
+   otherwise a healthy launch sends two launch events.
+3. **Ask AppsFlyer directly.** When the SDK still has nothing, `GET
+   <gcdBase><bundleId>?device_id=<uid>` with `Authorization: Bearer <devKey>`.
+   Give the SDK a few seconds first: GCD answers `400` for an install
+   AppsFlyer has not been told about yet, and an install queued while offline
+   is only filed once the launch goes out.
+
+```kotlin
+fun retrace(host: Activity) {
+    if (!started) { ignite(host); return }
+    val last = settled ?: return          // still in flight — leave it
+    if (last.isNotEmpty()) return         // has an answer — keep it
+    settled = null
+    reasked = true
+    reaskedAt = System.currentTimeMillis()
+    conversion = CompletableDeferred()
+    runCatching { AppsFlyerLib.getInstance().start(host) }
+}
+
+suspend fun awaitConversion(timeoutMs: Long): Map<String, Any?> {
+    // A repeat question gets less time: the SDK may never call back at all.
+    val window = if (reasked) minOf(timeoutMs, 8_000L) else timeoutMs
+    val fromSdk = withTimeoutOrNull(window) { conversion.await() } ?: emptyMap()
+    if (fromSdk.isNotEmpty()) return fromSdk
+    if (reasked) {
+        val waited = System.currentTimeMillis() - reaskedAt
+        if (waited < 8_000L) delay(8_000L - waited)
+    }
+    return askGcd()?.takeIf { it.isNotEmpty() }?.also { settled = it } ?: fromSdk
+}
+```
+
+---
+
+## 3. Wait for the conversion and the deep link together
+
+The deferred deep link arrives on its own callback (`subscribeForDeepLink`) and
+carries the click's parameters — `deep_link_value`, `deep_link_sub1`,
+`is_deferred` and the rest. The config endpoint is entitled to see them next to
+the conversion, so both are awaited, in parallel, with the deep link on a
+shorter leash (a run with no deep link must not be held up):
+
+```kotlin
+suspend fun awaitAttribution(timeoutMs: Long): Map<String, Any?> = coroutineScope {
+    val link = async { withTimeoutOrNull(5_000L) { deepLink.await() } }
+    val data = async { awaitConversion(timeoutMs) }
+    link.await()
+    data.await()
+}
+```
+
+Complete the deep-link deferred on **every** branch of the listener, including
+`status != FOUND` and the no-key and init-failure paths, or the wait always
+burns its full 5 s.
+
+---
+
+## 4. First launch with no link: the offline screen is the first frame
+
+Canonical scenario, and it must be reproducible on every build: user taps the
+OneLink, turns the radio off, installs, opens.
+
+1. **No-wifi screen on the first frame.** No splash before it, no progress bar
+   filling for a decision that is not going to be made. The check is the
+   instant one — `ConnectivityManager.activeNetwork` + `NET_CAPABILITY_INTERNET`
+   — run in the router's `onCreate` *before* `setContentView`, not the version
+   with a grace period. Waiting is precisely what this avoids.
+2. **Nothing is started and nothing is written down.** No AppsFlyer, no config
+   request, no mode. The install is still undecided.
+3. **The link returning restarts the whole pipeline.** The offline screen also
+   watches connectivity itself and leaves on its own; it must relaunch the
+   router (`CLEAR_TASK or NEW_TASK`), not patch state in place. The router then
+   runs the first decision in full, and because AppsFlyer was never started,
+   this run is a clean first ask and gets the real attribution.
+4. **The game is never shown on this path.** A OneLink install that begins
+   offline ends in the WebView once the link is back.
+
+```kotlin
+// Router.onCreate, before the loading view exists.
+if (pushUrl == null && vault.mode == MODE_UNSET && !net.linkUp()) {
+    startActivity(Intent(this, OfflinePortal::class.java))
+    finish()
+    overridePendingTransition(0, 0)
+    return
+}
+```
+
+The grace-period check (`linkUp()` else wait ~3 s on the connectivity flow)
+still belongs inside the first-decision branch as a second gate, for a link
+that dies between `onCreate` and the decision.
+
+---
+
+## 5. What may be persisted as the mode
+
+A negative verdict sticks for the life of the install, so it has to be earned.
+Persist `NATIVE` only when **both** hold:
+
+- the endpoint actually **answered** — 404, empty body, `ok:false`, anything
+  with an HTTP status. A thrown request, a DNS failure or a missing endpoint
+  is not an answer;
+- the request carried **real attribution**. An empty conversion map means the
+  endpoint was told nothing about where the install came from, so its "no"
+  is about the request, not about the user.
+
+Otherwise: open the game for this run, log why, and leave the mode unset so the
+next launch asks again. Distinguishing the two kinds of "no" needs a flag on
+the response model — the config client cannot collapse a transport failure and
+a 404 into the same value:
+
+```kotlin
+data class ChannelResult(
+    val active: Boolean,
+    val destination: String?,
+    val expiresAt: Long,
+    val answered: Boolean          // false only when nobody replied
+)
+
+when {
+    !result.answered  -> log("endpoint unreachable -> game, decision left open")
+    attribution.isEmpty() -> log("no attribution behind the answer -> game, decision left open")
+    else -> vault.mode = MODE_NATIVE
+}
+goNative()
+```
+
+This is the one deliberate exception to "the answer sticks", and it is worth
+the handful of extra requests it can cause in rare cases: the alternative is
+locking a paid user out of the gray part forever because of one bad second of
+network.
+
+---
+
+## 6. Timeouts
+
+| Wait | Value | Notes |
+|---|---|---|
+| Conversion, first launch | 30 s | The real answer lands in 4–6 s when the flow is right. |
+| Conversion, returning launch | 10 s | |
+| Conversion, re-ask after an empty answer | 8 s | Then GCD. |
+| Deferred deep link | 5 s | In parallel with the conversion, never after it. |
+| Organic re-check delay before GCD | 5 s | `af_status=Organic` on a first run is often a false positive. |
+| GCD HTTP | 10 s | |
+| Config endpoint | 15 s | |
+| Instant connectivity check | 0 | `activeNetwork` only. Used for the first frame. |
+| Connectivity grace inside a decision | ~3 s | For a link that is still coming up. |
+
+---
+
+## 7. Proving it works
+
+Watch the right tags. A filter that omits the attribution and config classes
+hides exactly the lines that matter:
+
+```powershell
+adb logcat -c; adb logcat -s <Router>:V <Tracker>:V <ConfigClient>:V <Offline>:V
+```
+
+Do this on a **debug** build, or temporarily drop `public static *** i(...)` from
+the `-assumenosideeffects android.util.Log` block — release strips exactly the
+lines this section asks you to read.
+
+A healthy OneLink first launch reads like this, end to end in under ten
+seconds:
+
+```
+mode=unset -> first decision
+AppsFlyer started from <Router>, uid=1785315478281-...
+deep link params: {deep_link_value=..., is_deferred=true}
+onConversionDataSuccess: {af_status=Non-organic, campaign=..., media_source=...}
+conversion={af_status=Non-organic, ...}
+POST https://<endpoint>  body {"af_status":"Non-organic", ... "af_id":"...", "push_token":"..."}
+HTTP 200 body={"ok":true,"url":"https://..."}
+```
+
+Red flags, each mapping to a section above:
+
+| In the log | Means |
+|---|---|
+| `conversion={}` returned in a few ms | A cached failure from an offline start. §2 |
+| 30 s gap, then `onBecameForeground` | `init` ran too late or `start` got the app context. §1 |
+| `GCD HTTP 400` | AppsFlyer has no such install yet — the launch never went out. §1, §2 |
+| `af_status=Organic` on a OneLink install | The GCD re-check should overrule it; if it doesn't, check the key and bundle. |
+| `HTTP 404 {"ok":false}` with an empty body of attribution fields | Not a backend bug. Fix the attribution, not the endpoint. |
+
+Test matrix for the launch, all on a real device with `adb shell pm clear`
+between runs: OneLink install online; OneLink install with the radio off, then
+on; organic install; returning gray user; returning native user; cold push;
+warm push; airplane mode mid-session.

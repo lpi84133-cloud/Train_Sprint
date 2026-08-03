@@ -1,0 +1,245 @@
+---
+description: Google Play moderation hardening for Kotlin gray-part apps. The union of what clusters a portfolio across submissions and what gets a developer account terminated. Read before shipping any build.
+globs: app/src/main/java/**/*.kt,app/build.gradle.kts,app/src/main/AndroidManifest.xml,gray.properties*
+alwaysApply: false
+---
+
+# Google Play moderation hardening — anti-fingerprint invariants
+
+> **Read this before every submission.** It is the Android counterpart of the
+> iOS `apple_moderation_hardening.mdc`, rewritten around how Google actually
+> enforces: Play Protect static scanning, the Play Console policy engine, and
+> the account-level graph that links developer accounts to each other.
+>
+> Cross-references: `kotlin_fingerprint.mdc` (the mechanism), `START_HERE.md`
+> (the three-command setup), `FINAL_CHECKLIST.md` (the ship gate).
+
+## 0. How Google differs from Apple — and where it doesn't
+
+Apple kills apps *before* review with a static pass over the IPA plus a graph
+query on the developer account. Google is less aggressive pre-publication but
+far more aggressive **after**: a policy strike on one app propagates to every
+app under the same developer account, and Google links accounts by payment
+instrument, D-U-N-S, upload IP, signing key, and the API keys embedded in the
+APKs themselves.
+
+The practical consequence is the same. **The fingerprint that matters is not
+the one a reviewer sees on day one; it is the one that links app #7 to app #2
+after app #2 gets a strike.** Everything below is about making that link not
+exist.
+
+What is different on Android and worth knowing:
+
+- **The signing key is a hard join.** Two apps signed with the same upload key
+  are the same developer to Google, full stop. Play App Signing does not hide
+  this — the upload certificate is recorded.
+- **`applicationId` collisions and near-collisions** (`com.acme.game1`,
+  `com.acme.game2`) are a trivially queryable pattern. Vary the reverse-domain
+  root, not just the leaf.
+- **APK static analysis is string-heavy.** Google's scanners index strings and
+  class names in the DEX far more than Apple indexes Mach-O symbols. R8
+  renames your classes but does not touch string constants, resource names, or
+  anything reachable by reflection — which is exactly why the fingerprint
+  engine exists.
+- **`google-services.json` is a loud join.** It carries the Firebase project
+  id, project number, and API key in the clear inside the APK. Two apps
+  sharing a Firebase project share an unambiguous identifier.
+
+## 1. What the fingerprint engine already handles
+
+Do not re-do any of this by hand. `gray.seed` → `app/build.gradle.kts` →
+`BuildConfig` covers:
+
+| Category | Values |
+|---|---|
+| Storage | plain + encrypted prefs filenames, every key inside |
+| JS | safe-area sentinel, keyboard sentinel, JS bridge class name |
+| Push | FCM channel id, channel title |
+| Crypto | codec seed bytes, multiplier, offset, algorithm variant |
+| Timings | push snooze, all attribution/config/GCD timeouts, connectivity grace, safe-area delay, heartbeat, redirect budget |
+| Network identity | Chrome major/build/patch in the User-Agent |
+| Secrets | config endpoint, AppsFlyer key, Firebase project number, GCD base — encoded at build time |
+
+`tools/rebrand.py` covers package name, sub-package folders, class names and
+the drawable prefix.
+
+**Verify with `gradlew grayReport` and diff against the previous project.**
+If any line matches a sibling, the seed was reused.
+
+## 2. What the engine cannot do — the operator's list
+
+These are the joins that live outside the source tree. Every one of them has
+sunk a portfolio.
+
+### 2a. Hard joins (Google links accounts on these directly)
+
+- **Upload signing key.** One keystore per app. Never reuse a `.jks` across
+  submissions, never reuse the key alias, never reuse the password.
+- **Firebase project.** One project per app. A shared `google-services.json`
+  puts the same `project_number` and `mobilesdk_app_id` in two APKs.
+- **AppsFlyer dev key.** One key per app where the account allows it. The key
+  is encoded in the APK, but it decodes to the same plaintext once one
+  submission is unpacked.
+- **Play Console developer account.** One portfolio slot per account, with
+  independent payment instruments and legal entities. Sharing an account means
+  a strike on one is a strike on all.
+- **Config endpoint domain.** Different registrar, different registration
+  date, different nameservers, different hosting IP. A `whois` sweep across
+  sibling domains showing the same registrar and same-week registration is
+  trivially clustered.
+
+### 2b. Soft joins (individually weak, together decisive)
+
+- Upload IP / CI machine. Rotate, or at minimum do not upload two apps from
+  the same office IP within a short window.
+- Internal testing tester emails. Different set per app; no shared personal
+  addresses.
+- Store listing text. Do not reuse phrasing, screenshot templates, feature
+  graphic layouts, or the same stock art pack.
+- Privacy policy URL and its hosting. A shared policy page is a direct link.
+- Package reverse-domain root. Vary it: `com.<different-brand>.<word>`.
+- Release cadence. Seven apps published in one week from seven accounts with
+  the same structure is a pattern in itself.
+
+## 3. Policy surfaces specific to the gray flow
+
+### 3a. The two-faced app (Deceptive Behavior / Device and Network Abuse)
+
+A single remote boolean selecting between a native game and a full-screen
+WebView is the structural marker. It cannot be removed without removing the
+product, but the signal can be lowered:
+
+- **Keep the native part real and reviewable.** The white part is what passes
+  review. A placeholder Activity with a centered label is an automatic
+  Deceptive Behavior finding. `NativeContentActivity` in this template is a
+  stub — it **must** be replaced before submission.
+- **Keep the native part reachable from the gray path.** A "Play offline"
+  entry in the WebView shell that navigates to the game removes the
+  "unreachable subtree" signal from a reachability analysis.
+- **Do not ship large dead weight in the unpicked branch.** If the game bundle
+  is more than ~3× the gray shell, either shrink it or move it to Play Asset
+  Delivery.
+
+### 3b. The post-review URL router (Deceptive Behavior 4.1 / Unwanted Software)
+
+The app can be handed a URL by the config endpoint or by a push payload. Left
+ungated, that is "the app changes its purpose after review".
+
+- **`UrlGuard` must be armed.** `gray.allowedHosts` empty means every incoming
+  URL is accepted. The build prints a warning; do not ship past it.
+- **Never allowlist a wildcard TLD** (`com`, `net`). Allowlist the specific
+  partner hosts.
+- **The NATIVE lock must hold.** Once an install is NATIVE, no push and no
+  config answer may flip it to a WebView. Enforced in `WelcomePortal` and
+  `PushRelay` — do not "temporarily" relax it for a test.
+- **Saved URLs expire.** `DataVault.isUrlValid()` honours the `expires` field
+  from the server. Do not persist a URL with no expiry when the server sends
+  one.
+
+### 3c. Permissions — declaration must match use
+
+Google's pre-launch report flags declared permissions with no matching call.
+The manifest currently declares four:
+
+| Permission | Justification | Remove if… |
+|---|---|---|
+| `INTERNET` | everything | never |
+| `ACCESS_NETWORK_STATE` | `NetWire` connectivity gate | never |
+| `POST_NOTIFICATIONS` | FCM prompt on API 33+ | the app ships without push |
+| `VIBRATE` | notification channel vibration | you disable `enableVibration` |
+
+**Never add** `QUERY_ALL_PACKAGES`, `REQUEST_INSTALL_PACKAGES`,
+`SYSTEM_ALERT_WINDOW`, `READ_EXTERNAL_STORAGE`, or any location permission.
+Each one moves the app into a policy category with a declaration form
+attached, and the gray flow needs none of them. The WebView file chooser works
+through `ActivityResultContracts` and needs no storage permission — see
+pitfalls #12.
+
+### 3d. Data safety form
+
+The form must match what the APK actually does. The gray flow collects:
+
+- **Device or other IDs** — AppsFlyer ID, FCM token. Purpose: Analytics,
+  Advertising. Shared with third parties: yes (AppsFlyer, Firebase).
+- **App activity** — none beyond attribution unless the partner site is
+  declared separately.
+
+Declaring "no data collected" while shipping the AppsFlyer SDK is a
+straightforward policy violation and it is checked automatically.
+
+### 3e. Metadata coherence (Play policy: Misrepresentation)
+
+`settings.gradle.kts` `rootProject.name`, `gray.appLabel`, the Play listing
+title, the screenshots and the description must all describe the same native
+game. A listing describing a puzzle game over an APK whose only real screen
+is a WebView is the clearest possible finding.
+
+Check before every upload:
+
+```powershell
+rg -n 'rootProject.name' settings.gradle.kts
+rg -n '^gray\.appLabel' gray.properties
+rg -n 'app_name' app/src/main/res/values/strings.xml
+```
+
+## 4. Release hygiene the scanner reads
+
+- **R8 on, resource shrinking on.** Already configured. Verify the mapping
+  file is uploaded to Play so crash reports remain readable.
+- **`Trace` compiles out.** Every gray-flow log goes through `core/Trace`,
+  guarded by `BuildConfig.DEBUG`. A release build with `Sending first launch`
+  or a dumped config body in logcat is both a leak and a marker.
+- **`gray.debugForceUrl` empty in release.** The build script forces it; do
+  not add a second path.
+- **No `applicationIdSuffix`.** Breaks attribution (pitfalls #1) and produces
+  a second package id in the Firebase project.
+- **`allowBackup=false` + `data_extraction_rules.xml`.** Already set. Stops an
+  old server answer travelling to a new device and stops the encrypted prefs
+  file being an inter-device join.
+- **`android:debuggable` never set true in release.** AGP handles this; do not
+  override it.
+
+## 5. Verification commands
+
+Run all of these before every upload. Every one must return zero matches
+inside `app/src/main/java/` unless noted.
+
+```powershell
+# 5.1 — Fingerprint literals that must live in BuildConfig, not source.
+rg -n '259_?200|Chrome/1[0-9][0-9]\.|__flsa\b|__kb\b|KbPan|fl_state|fl_enc|app_push_channel|ChangeThisSeed' app/src/main/java
+
+# 5.2 — The template package must be gone after rebrand.py.
+rg -n 'com\.example\.grayshell' app/src/main/java app/src/main/AndroidManifest.xml app/proguard-rules.pro
+
+# 5.3 — Logging outside the Trace bottleneck.
+rg -n 'Log\.(i|w|e|d|v)\(' app/src/main/java | rg -v 'core[/\\]Trace\.kt'
+
+# 5.4 — Permissions: nothing beyond the four justified ones.
+rg -n 'uses-permission' app/src/main/AndroidManifest.xml
+
+# 5.5 — Allowlist armed (must be NON-empty).
+rg -n '^gray\.allowedHosts' gray.properties
+
+# 5.6 — Debug URL empty (must be blank or absent).
+rg -n '^gray\.debugForceUrl' gray.properties
+
+# 5.7 — White part is real, not the stub.
+rg -n 'Replace .*with your real game|NATIVE CONTENT \(white part\)' app/src/main/java
+
+# 5.8 — Seed is not the template default.
+rg -n 'CHANGE-ME-EVERY-PROJECT' gray.properties
+
+# 5.9 — Derived fingerprint, for diffing against the previous project.
+gradlew grayReport
+```
+
+`5.1`–`5.3`, `5.7`, `5.8` must be empty. `5.5` must be non-empty. `5.4` must
+list exactly the four permissions from §3c. `5.6` must be blank.
+
+## 6. The one-line summary
+
+The template makes it impossible to accidentally ship two apps with the same
+binary fingerprint. It cannot make it impossible to ship two apps with the
+same **keystore, Firebase project, AppsFlyer key, domain registrar and
+developer account** — and those are the joins that actually terminate
+portfolios. §2a is not optional.

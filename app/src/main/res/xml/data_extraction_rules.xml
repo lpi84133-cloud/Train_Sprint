@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Blocks Auto Backup and Device-to-Device transfer from copying app data.
+  A returning install must decide its channel fresh on the new device — a
+  transferred STREAM url or push URL is a security risk (an old server answer
+  turning up on someone else's phone) and a fingerprint join (the same
+  encrypted preferences file cluster across devices).
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="root" />
+        <exclude domain="database" />
+        <exclude domain="sharedpref" />
+        <exclude domain="external" />
+        <exclude domain="file" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="root" />
+        <exclude domain="database" />
+        <exclude domain="sharedpref" />
+        <exclude domain="external" />
+        <exclude domain="file" />
+    </device-transfer>
+</data-extraction-rules>

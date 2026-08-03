@@ -1,0 +1,130 @@
+---
+description: Per-project binary fingerprint uniqueness for Kotlin gray-part apps. MANDATORY when cloning this template into a new app — avoids cross-submission patterns that get whole developer accounts banned.
+globs: app/src/main/java/**/*.kt,app/build.gradle.kts,settings.gradle.kts,gray.properties*
+alwaysApply: false
+---
+
+# Kotlin Gray-Part — Per-Project Fingerprint
+
+Stores scan for structural patterns shared across submissions from the same
+developer. Folder names, class names, codec seed, `259200`, `Chrome/131…`,
+`__flsa`, `KbPan`, `fl_state` — every one of these is a value that survives
+casual renaming and clusters a portfolio. Two apps sharing enough of them
+can get **all related accounts banned in a chain**.
+
+The whole point of this template is that this class of mistake **is not
+possible to make by hand any more**. Two mechanisms take care of it.
+
+---
+
+## 1. Automated derivation from `gray.seed`
+
+`app/build.gradle.kts` reads `gray.properties`, feeds `gray.seed` into a
+deterministic RNG, and emits into `BuildConfig` a value for every one of
+the following. The Kotlin code reads only from `BuildConfig`, so the source
+tree carries **none** of these as literals:
+
+- SharedPreferences plain + encrypted file names
+- Every preference key inside them (`run_ch`, `dest_u`, …)
+- JS safe-area sentinel, JS keyboard sentinel, JS bridge class name
+- FCM channel id + human-facing title
+- Push snooze seconds (2–7 days range), organic GCD delay, config timeout,
+  attribution first-launch / return timeouts, deep-link wait, GCD timeout,
+  connectivity grace, safe-area re-inject delay, heartbeat interval,
+  redirect retry budget
+- Chrome major / build / patch numbers in the User-Agent
+- XOR codec seed byte array (24–40 random bytes), multiplier, offset, and
+  algorithm variant (three interchangeable shapes rotate across projects)
+- Encoded config endpoint / AppsFlyer key / Firebase project number / GCD
+  base — encoded at build time with the derived codec
+
+To rotate any of it: change `gray.seed` (`gradlew graySeed` produces a fresh
+one) and rebuild. Do **not** hand-edit any of the derived files.
+
+---
+
+## 2. Automated code-shape rotation with `tools/rebrand.py`
+
+Package layout and class names cannot be encoded into `BuildConfig` — R8
+does mangle them, but a stack trace or `dexdump` still reveals them.
+`tools/rebrand.py` handles the rotation:
+
+- Application package (`com.example.grayshell` → `com.<project>.<word>`)
+- Kotlin sub-package folder names — chosen from the seed against a theme
+  word bank in the script
+- Every class name in the gray flow (Application, router, WebView host,
+  keyboard, offline, permission, config client, attribution, FCM,
+  storage, connectivity, blueprint, screens)
+- Drawable resource prefix (`gray_*` → theme-picked)
+
+The tool prints its plan first; nothing changes on disk until `--apply`.
+Add themes freely — the pool of word banks is easy to widen.
+
+---
+
+## 3. Mandatory rules
+
+1. **Never share `gray.seed` across submissions.** Not even between debug
+   forks of the same team — a leaked debug build with a shared seed
+   clusters just as loudly. Generate a fresh one for every project with
+   `gradlew graySeed`.
+2. **Never commit `gray.properties`.** It's in `.gitignore`; keep it there.
+   The seed and credentials both live in it.
+3. **Never hand-edit `BuildConfig` fields, encoded arrays, storage keys,
+   sentinels, or JS bridge names.** They are derived. If you find yourself
+   writing "259200" or "__flsa" in code, you are undoing the whole
+   mechanism.
+4. **Run `tools/rebrand.py` for every new project.** Skipping it ships two
+   apps with identical class names and identical folder paths — the same
+   cluster join the encoded arrays were meant to break.
+5. **Rotate library versions per project.** Stagger `okhttp`, `AppsFlyer
+   SDK`, `Firebase BOM`, `androidx.security`, coroutines — the dependency
+   set is itself a fingerprint. `app/build.gradle.kts` is a normal Gradle
+   file; edit the versions there.
+6. **Vary the notification icon shape.** Reuse the framework but redraw
+   the glyph; a shared monochrome shape is a visible cluster join.
+
+---
+
+## 4. Verification — what to grep for
+
+Before every submission run these — every one must return **no** matches
+inside `app/src/main/java/`. `gradlew grayReport` prints the derived
+values in one place for eyeballing.
+
+```
+rg -n '259_?200|Chrome/131|__flsa\b|__kb\b|KbPan|fl_state|fl_enc|app_push_channel|ChangeThisSeed'
+rg -n 'com\.example\.grayshell'
+rg -n 'Log\.i\(|Log\.w\(|Log\.e\('    # only inside core/Trace.kt is allowed
+```
+
+If a match falls outside `core/Trace.kt` for the last line, the log call
+is not guarded by `BuildConfig.DEBUG` and will leak into a release build.
+Route it through `Trace`.
+
+---
+
+## 5. Do NOT hide (breaks functionality)
+
+| Item | Why it must stay visible |
+|------|--------------------------|
+| `INTERNET`, `ACCESS_NETWORK_STATE` perms | no network otherwise |
+| `POST_NOTIFICATIONS` perm | API 33+ system dialog needs it |
+| FCM service + channel meta-data | pushes silently dropped |
+| `adjustResize` on the shell activity | keyboard covers inputs |
+| `google-services.json` | Firebase init fails |
+| App Check activate | config requests rejected (403) |
+| `networkSecurityConfig` cleartext | http partner content blocked |
+
+---
+
+## 6. Release hygiene
+
+- `debugForceStreamUrl` is empty in release under all circumstances; the
+  build script forces it.
+- No `applicationIdSuffix` (breaks attribution — pitfalls #1).
+- R8 + resource shrinking on in release. `proguard-rules.pro` keeps
+  Firebase / AppsFlyer / OkHttp / WebView JS-interface / entry classes.
+- `Trace` compiles out completely — verify with `BuildConfig.DEBUG == false`
+  producing dead branches in the release Kotlin.
+- Keystore + `keystore.properties` are gitignored; never commit them.

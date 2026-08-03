@@ -16,7 +16,10 @@
     <color name="red_accent">#FFB22222</color>
     <color name="green_win">#FF37D67A</color>
 
-    <color name="ic_launcher_background">#1A1208</color>
-    <!-- Background for adaptive icon & Android 12+ splash — dark warm tone from Icon.png corners -->
+    <!-- Gray-part screens -->
+    <color name="bg_dark">#3A0A0C</color>
+    <color name="bg_red">#6E0D12</color>
+
+    <!-- Background for adaptive icon & Android 12+ splash — dark warm tone from icon2 corners -->
     <color name="launch_bg">#160C06</color>
 </resources>

@@ -1,10 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  Android 12+ splash screen icon (windowSplashScreenAnimatedIcon).
-  Must be AdaptiveIconDrawable — flat PNG is silently ignored on API 31+.
-  Identical to the launcher icon so the desktop icon and splash match exactly.
+  Android 12+ splash icon (windowSplashScreenAnimatedIcon). Must resolve to an
+  AdaptiveIconDrawable: a flat PNG is silently ignored on API 31+ and the OS
+  falls back to the launcher icon, or to the generic Android figure when that
+  cannot be rendered either.
+
+  Kept byte-for-byte equivalent to mipmap-anydpi-v26/ic_launcher.xml so the
+  splash matches the home-screen icon exactly.
 -->
 <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
     <background android:drawable="@color/launch_bg" />
-    <foreground android:drawable="@drawable/ic_launcher_foreground_inset" />
+    <foreground android:drawable="@drawable/ic_launcher_fg_padded" />
 </adaptive-icon>

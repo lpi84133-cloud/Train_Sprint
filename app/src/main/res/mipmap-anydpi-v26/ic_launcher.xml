@@ -1,11 +1,17 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  Proper adaptive launcher icon.
-  background: solid dark colour — fills corners under any mask shape.
-  foreground: Icon.png with ~14 % inset so the art is fully visible
-              inside the circle / squircle / teardrop safe zone.
+  Adaptive launcher icon. ic_splash_logo.xml is deliberately identical so the
+  Android 12+ splash and the home-screen icon are the same image.
+
+  The 14 % safe-zone inset is baked into ic_launcher_fg_padded.png rather than
+  applied here with an <inset> or <layer-list>. Insets are expressed in dp while
+  the source bitmap's own size is in pixels, so the resulting margin came out a
+  different share of the icon on every screen density — and the one density
+  where it came out too small is the one where a circular mask clips the
+  shield's corners. A foreground whose padding is already part of the image is
+  scaled to the 108 dp canvas as a unit and keeps its proportions everywhere.
 -->
 <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
     <background android:drawable="@color/launch_bg" />
-    <foreground android:drawable="@drawable/ic_launcher_foreground_inset" />
+    <foreground android:drawable="@drawable/ic_launcher_fg_padded" />
 </adaptive-icon>

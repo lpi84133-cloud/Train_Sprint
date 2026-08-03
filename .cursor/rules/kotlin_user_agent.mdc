@@ -1,0 +1,118 @@
+---
+description: User-Agent contract for the Kotlin gray part — how the string is built, what varies per project, and when the appid/appname suffix is allowed. Read before touching core/UserAgent.kt or any code that sends a UA.
+globs: app/src/main/java/**/core/UserAgent.kt,app/src/main/java/**/portal/*.kt,app/src/main/java/**/reach/*.kt,gray.properties*
+alwaysApply: false
+---
+
+# Kotlin Gray-Part — User-Agent
+
+## 1. One builder, one string
+
+`core/UserAgent.value` is the only place a User-Agent is constructed.
+Everything that talks to a server reads from it:
+
+- the config endpoint POST (`ReachDispatch`)
+- the AppsFlyer GCD fallback GET (`TrackingDispatch`)
+- the WebView (`StreamPortal`, via `settings.userAgentString`)
+
+**Why this matters and is not cosmetic.** The previous version of this
+template had two independent builders — the router's said
+`Chrome/131.0.0.0`, the WebView's said `Chrome/131.0.6778.135`. The backend
+made its gray/white decision against one UA and the partner site then saw a
+different one. Some partner cashiers key session validity on the UA and were
+dropping the session on the first navigation. If you add a third caller, read
+from `UserAgent.value`; never assemble a string locally.
+
+## 2. What the string looks like
+
+```
+Mozilla/5.0 (Linux; Android <release>; <BRAND> <MODEL> Build/<ID>)
+AppleWebKit/537.36 (KHTML, like Gecko) Chrome/<major>.0.<build>.<patch>
+Mobile Safari/537.36
+```
+
+- `<release>`, `<BRAND>`, `<MODEL>`, `<ID>` come from `android.os.Build` at
+  runtime — real device values, filtered to printable ASCII and with spaces in
+  the model replaced by `_`, exactly as Chrome does it.
+- `<major>.0.<build>.<patch>` is **per project**, derived from `gray.seed` and
+  delivered through `BuildConfig.UA_CHROME_MAJOR/BUILD/PATCH`. Ranges:
+  major 146–150, build 6900–7900, patch 40–250.
+
+### On the scaffolding literals
+
+`Mozilla/5.0 (Linux; Android `, `AppleWebKit/537.36`, `Mobile Safari/537.36`
+appear as plain literals in `core/UserAgent.kt`, and that is correct. These
+are what every real Chrome on Android sends; they are universal, not a
+portfolio marker. What clusters a portfolio is the **version tuple** — which
+is why that part is seeded and the scaffolding is not.
+
+This is a deliberate divergence from the iOS rule
+(`apple_moderation_hardening.mdc` §4), which requires encoding the scaffolding
+too. Apple's scanner indexes the scaffolding substring in Mach-O; Google's
+does not, and encoding a string that a billion honest apps also contain buys
+nothing while adding decoder infrastructure to the binary.
+
+## 3. Never write these
+
+- **No `Dart`, `Flutter`, `okhttp`, `WebView`, or the library default.** The
+  OkHttp default (`okhttp/4.12.0`) on the config POST is an immediate tell
+  that the request is not from a browser. `ReachDispatch` sets the header
+  explicitly for exactly this reason — do not remove it.
+- **No `; wv)` token.** Android's stock WebView UA includes `; wv` inside the
+  platform parentheses. Chrome proper does not. We present as Chrome, so the
+  token is absent — `settings.userAgentString` is overwritten before the first
+  load.
+- **No hardcoded device model.** A fixed `SM-G991B` across a portfolio is a
+  perfect join.
+
+## 4. The `appid/appname` suffix — decision matrix
+
+Some partner backends route the cashier on a suffix appended to the UA:
+
+```
+… Mobile Safari/537.36 appid/<applicationId> appname/<Token>
+```
+
+**No honest browser writes this.** It is the single most distinctive string
+the app can send, and the exact pattern appears on affiliate templates. It is
+off by default (`gray.uaAppSuffix = false`).
+
+| Situation | What to do |
+|---|---|
+| Partner does not need it | Leave it off. This is the default and the right answer |
+| Partner accepts a custom **request header** instead | Send `X-App-Id` on the config POST; leave the UA clean |
+| Partner accepts the identity **out of band** (per-app endpoint, query param) | Use that; leave the UA clean |
+| Partner genuinely will not budge | Set `gray.uaAppSuffix = true` and `gray.uaAppToken = <Token>`, and note it in the sign-off table |
+
+When it is on, both tokens vary per project anyway — `applicationId` is
+project-specific and `gray.uaAppToken` is a per-project string — so two apps
+never send the same suffix. That mitigates the join but not the "no browser
+writes this" tell. Prefer a header.
+
+## 5. Changing the UA per project
+
+Nothing to do by hand. Rotate `gray.seed`; the version tuple moves with it.
+
+```powershell
+gradlew grayReport      # prints "chrome UA = 148.0.7203.171"
+```
+
+Diff that line against every sibling project. If it matches, the seed was
+reused and the whole fingerprint is shared, not just the UA.
+
+## 6. Verification
+
+```powershell
+# No second UA builder anywhere.
+rg -n 'Mozilla/5\.0' app/src/main/java        # exactly one hit: core/UserAgent.kt
+
+# No library default leaking onto the config POST.
+rg -n 'User-Agent' app/src/main/java          # ReachDispatch + TrackingDispatch set it
+
+# Suffix state matches the partner agreement.
+rg -n '^gray\.uaAppSuffix' gray.properties
+```
+
+On device, confirm what the partner actually receives — the site's own
+`navigator.userAgent` in a debug WebView console, or the backend's access log.
+An assumption here has cost a full test cycle before.

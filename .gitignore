@@ -1,6 +1,5 @@
 *.iml
 .gradle
-/local.properties
 /.idea
 .DS_Store
 /build
@@ -9,3 +8,9 @@
 .cxx
 local.properties
 app/build/
+
+# Gray part — seed, credentials and signing material never reach git.
+gray.properties
+keystore/keystore.properties
+keystore/*.jks
+app/google-services.json

@@ -1,0 +1,623 @@
+---
+description: Real bugs hit while building the native Kotlin gray-part app and their exact fixes. Consult before debugging crashes, blank screens, attribution failures, or build errors in a Kotlin gray-part project.
+globs: app/src/main/java/**/*.kt,app/build.gradle.kts,app/src/main/AndroidManifest.xml
+alwaysApply: false
+---
+
+# Kotlin Gray-Part — Pitfalls & Fixes
+
+Every entry below is a bug that actually occurred while building this app, with
+the root cause and the fix. Apply these preventively in new projects.
+
+---
+
+## 1. `.debug` applicationIdSuffix breaks AppsFlyer attribution (CRITICAL)
+
+**Symptom:** App always falls into native/white mode. Backend returns
+`404 {"ok":false,"message":"No data"}`. AppsFlyer GCD returns
+`400 {"error_reason":"App ID is incorrect"}`. Attribution body is empty.
+
+**Cause:** `debug { applicationIdSuffix = ".debug" }` makes the package
+`com.x.app.debug`. AppsFlyer/OneLink and Firebase are registered for the real
+`com.x.app`, so attribution never binds.
+
+**Fix:** Do NOT use `applicationIdSuffix` for debug. Keep the production
+`applicationId` so AppsFlyer recognizes the install. Use only
+`versionNameSuffix = "-debug"` if you need to distinguish builds.
+
+```kotlin
+buildTypes {
+    debug { versionNameSuffix = "-debug" } // no applicationIdSuffix
+}
+```
+
+Also keep `google-services.json` with the single real package (no `.debug`
+client entry needed once the suffix is gone).
+
+---
+
+## 2. Window insets controller NPE before setContentView (CRASH)
+
+**Symptom:** `NullPointerException: ... getWindowInsetsController() on a null
+object reference` in `onCreate`.
+
+**Cause:** touching `window.insetsController` / decorView before
+`setContentView` — DecorView doesn't exist yet.
+
+**Fix:** call the fullscreen/immersive helper AFTER `setContentView`, and use
+`WindowCompat`:
+
+```kotlin
+setContentView(view)
+WindowCompat.setDecorFitsSystemWindows(window, false)
+WindowCompat.getInsetsController(window, window.decorView)
+    .hide(WindowInsetsCompat.Type.systemBars())
+```
+
+---
+
+## 3. Vibration without permission (CRASH)
+
+**Symptom:** `SecurityException: ... requires android.permission.VIBRATE`.
+
+**Fix:** add `<uses-permission android:name="android.permission.VIBRATE"/>`
+AND wrap the call in try/catch — vibration is cosmetic, never let it crash:
+
+```kotlin
+try { vibrator.vibrate(VibrationEffect.createOneShot(ms, DEFAULT_AMPLITUDE)) }
+catch (_: Exception) {}
+```
+
+---
+
+## 4. Native render crash on some GPUs (Canvas game)
+
+**Symptom:** Java crash buffer empty, app dies; logs show `render engine as VK`
+(Vulkan). Hardware-accelerated custom `Canvas` view crashes on some OEM drivers.
+
+**Fix:** for a pure 2D `Canvas` game view use software rendering and guard
+`onDraw`:
+
+```kotlin
+init { setLayerType(LAYER_TYPE_SOFTWARE, null) }
+override fun onDraw(c: Canvas) { try { /* draw */ } catch (_: Exception) {} }
+```
+
+---
+
+## 5. Game timer fires instantly (now == 0)
+
+**Symptom:** Round/timer "expires" immediately on start.
+
+**Cause:** `now` field initialised to 0; `deadline = now + duration` is in the
+past relative to `SystemClock.uptimeMillis()`.
+
+**Fix:** read the clock at start, not a stale field:
+
+```kotlin
+fun startRound() {
+    val t = SystemClock.uptimeMillis(); now = t
+    deadline = t + duration
+}
+```
+
+---
+
+## 6. `BuildConfig` unresolved
+
+**Symptom:** `Unresolved reference 'BuildConfig'`.
+
+**Fix:** AGP 8+ doesn't generate it by default:
+```kotlin
+android { buildFeatures { buildConfig = true } }
+```
+Or just avoid it (log unconditionally with `Log.i`).
+
+---
+
+## 7. AppsFlyer listener registered too late (no attribution)
+
+**Symptom:** Attribution callback never fires; `awaitAttribution` times out.
+
+**Cause:** passing `null` to `init()` then calling
+`registerConversionListener` after `start()`.
+
+**Fix:** pass the listener INTO `init`. Where `init` and `start` each belong is
+a separate and much nastier question — see #19 and `kotlin_launch_flow.mdc`
+before copying the snippet below, which shows only the listener bridge:
+
+```kotlin
+private val attribution = CompletableDeferred<Map<String, Any?>>()
+fun init() {
+    val l = object : AppsFlyerConversionListener {
+        override fun onConversionDataSuccess(d: MutableMap<String, Any?>) {
+            CoroutineScope(Dispatchers.IO).launch {
+                val data = if ((d["af_status"]?.toString())
+                        .equals("Organic", true)) {
+                    delay(5_000); fetchGcd() ?: d        // false-organic fix
+                } else d
+                if (!attribution.isCompleted) attribution.complete(data)
+            }
+        }
+        override fun onConversionDataFail(e: String) {
+            if (!attribution.isCompleted) attribution.complete(emptyMap())
+        }
+        override fun onAppOpenAttribution(p: MutableMap<String,String>?) {}
+        override fun onAttributionFailure(p: String?) {
+            if (!attribution.isCompleted) attribution.complete(emptyMap())
+        }
+    }
+    AppsFlyerLib.getInstance().apply { init(key, l, ctx); start(ctx) }
+}
+suspend fun awaitAttribution(ms: Long) =
+    withTimeoutOrNull(ms) { attribution.await() } ?: emptyMap()
+```
+
+---
+
+## 8. Black "Android robot" screen on WebView load/exit
+
+**Symptom:** A black screen with the green Android icon flashes for a second
+when entering the WebView or when a network error occurs.
+
+**Causes & fixes:**
+- Launch preview window → use a theme with
+  `windowDisablePreview=true`, `windowBackground=@android:color/black`,
+  `windowAnimationStyle=@null`, black status/nav bars.
+- Native WebView error page → on a network `onReceivedError` (main frame),
+  immediately `view.stopLoading(); view.loadUrl("about:blank")` and navigate to
+  the offline screen with `overridePendingTransition(0,0)`.
+
+---
+
+## 9. Retry from offline screen shows a black WebView
+
+**Symptom:** Tapping Retry returns to a blank/black WebView.
+
+**Cause:** `StreamPortal` is `singleTask`; Retry reuses the existing instance
+via `onNewIntent`, but the WebView was set to `about:blank` when going offline,
+and `onNewIntent` only handled push URLs.
+
+**Fix:** in `onNewIntent` reload the stream URL when the current page is blank:
+```kotlin
+override fun onNewIntent(i: Intent) {
+    super.onNewIntent(i); setIntent(i); navigatedOffline = false
+    val target = i.getStringExtra(EXTRA_STREAM_URL) ?: vault.destinationUrl
+    val cur = wv.url
+    if (!target.isNullOrBlank() &&
+        (cur.isNullOrBlank() || cur == "about:blank" || cur != target))
+        wv.loadUrl(target)
+}
+```
+
+---
+
+## 10. Safe-area CSS kill flattens the site against both edges
+
+**Symptom:** the page has no side gutters. Columns and cards touch the screen
+edge, buttons look thin and squashed. Worst on the partner's own test site,
+because that is the one laid out with `padding` on `body` / `#app`.
+
+**Cause:** the injection zeroing the page's box model instead of the safe-area
+variables. Two generations of this bug:
+
+- `*{padding-top:0!important;padding-bottom:0!important}` — strips padding from
+  every element on the page.
+- The "fixed" version, which is just as destructive:
+  `html,body,#__nuxt,#app,#root{padding-left:0!important;padding-right:0!important;margin-top:0!important}`.
+  Named selectors instead of `*`, but those are precisely the elements sites
+  build their gutters on.
+
+**The rule is about which properties, not which selectors.** The window already
+pads for the cutout in `applyInsets()`. All the CSS has to do is stop the page
+adding a *second* inset of its own through `env(safe-area-inset-*)`.
+
+**Fix:** zero the variables, and nothing else. `padding-left`, `padding-right`
+and `margin` are never touched anywhere. `padding-top` only on chrome wrappers
+that are known to add a status-bar offset:
+```css
+:root{--safe-area-inset-top:0px!important; --sat:0px!important; /* ...all vars */}
+.gameview-mobile-header,.app-header{padding-top:0!important;}
+```
+Re-apply on `pushState`/`replaceState`/`popstate` and a 2500ms interval.
+
+---
+
+## 11. No-WiFi screen never appears when page already loaded
+
+**Symptom:** Turning off internet while a page is loaded just freezes the site;
+no offline screen.
+
+**Cause:** no WebView request is in flight, so `onReceivedError` never fires;
+a capability-filtered `registerNetworkCallback` may not emit `onLost`.
+
+**Fix:** two layers —
+1. `registerDefaultNetworkCallback` with `onLost`/`onUnavailable` → emit false.
+2. A heartbeat coroutine in the WebView screen: every ~4s check
+   `isConnected()`; if false → go offline. Guard against double-navigation.
+
+---
+
+## 12. target="_blank" opens a slow external Chrome Custom Tab
+
+**Symptom:** Some links take ~20s (cold Chrome launch) and open outside the app.
+
+**Cause:** `target="_blank"` / `window.open` aren't handled → Android routes them
+to an external browser. Also `shouldOverrideUrlLoading` sent non-`http` schemes
+externally too eagerly.
+
+**Fix:** leave `setSupportMultipleWindows(false)` (the default). The WebView
+then opens `target="_blank"` in place and no external tab is involved.
+
+**Do NOT** enable multiple windows and hand `onCreateWindow` the same WebView
+as the transport — see #21, it crashes.
+
+For scheme routing, whitelist the web schemes and externalize everything else
+(#22), not the other way round.
+
+---
+
+## 13. Mixed content blocked
+
+**Symptom:** Partner site assets (http on https page) don't load.
+
+**Fix:** `settings.mixedContentMode = MIXED_CONTENT_ALWAYS_ALLOW` and a
+`network_security_config.xml` with `cleartextTrafficPermitted="true"`.
+
+---
+
+## 14. Loading bar fills before the app is ready; dots freeze
+
+**Symptom:** The splash progress bar reaches 100% before routing finishes; the
+"Loading..." dots stop animating.
+
+**Cause:** bar tied to a fixed `durationMs` timer; on completion the draw loop
+`return`s and stops invalidating.
+
+**Fix:** add an **indeterminate** mode for the routing splash — ease the bar
+toward ~92% (never 100%) with a moving shimmer, keep posting frames so the dots
+keep animating; navigate only when routing actually completes.
+
+---
+
+## 15. PNG in res/drawable* fails AAPT compile
+
+**Symptom:** `AAPT: error: file failed to compile` on a screen-art PNG.
+
+**Cause:** PNG with an ICC profile / non-standard chunks AAPT can't crunch.
+
+**Fix:** re-save as a clean 32-bit PNG via `System.Drawing`, or better convert
+the large full-screen art to **WebP** (also 10x smaller). Reference by resource
+name (`R.drawable.x`) — extension doesn't matter, so no code changes needed.
+
+---
+
+## 16. `gradlew installDebug` fails on a locked phone
+
+**Symptom:** `Can't open file: /data/local/tmp/app-debug.apk` /
+`INSTALL_FAILED`.
+
+**Cause:** Samsung blocks `/data/local/tmp` writes while the screen is locked.
+
+**Fix:** install via streaming instead:
+`adb install -r app/build/outputs/apk/debug/app-debug.apk`.
+
+---
+
+## 17. Skip button invisible on a colorful permission screen
+
+**Fix:** give the secondary button real contrast — dark translucent fill
+(`#CC101012`), 2dp gold stroke, gold bold text with a black shadow layer.
+Don't rely on plain white text over a bright background.
+
+---
+
+## 19. AppsFlyer started offline, or started from the wrong place (CRITICAL)
+
+Three distinct bugs with one symptom — **a OneLink install lands in the native
+game** — and all three cost a full test cycle each. Full treatment in
+`kotlin_launch_flow.mdc`; the short forms:
+
+**19a. Started with no connection.** `start()` runs in `Application.onCreate`,
+the device is offline, `onConversionDataFail` fires in milliseconds and the
+`CompletableDeferred` completes with an empty map. When the user turns Wi-Fi on
+and the router asks again, it gets that cached empty map back in 2 ms, sends a
+body with no attribution, and the backend correctly answers 404.
+
+*Tell:* `conversion={}` logged a couple of milliseconds after the decision
+started.
+*Fix:* connectivity gate before `start`, always. Plus a re-ask and a direct GCD
+call as safety nets.
+
+**19b. `init` moved out of the Application.** Fixing 19a by moving the whole
+AppsFlyer setup into the router breaks it differently: the SDK learns the app
+is in the foreground from `ActivityLifecycleCallbacks` registered during
+`init`, so registering them while an activity is already resumed misses the
+event. The launch is queued until the *next* activity appears — the native
+game, ~32 seconds later.
+
+*Tell:* a 30-second gap, then `onBecameForeground` / `Sending first launch for
+this session!`, then the correct conversion, far too late. AppsFlyer's own
+payload says `"first_launch":{"init_to_fg":32239}`.
+*Fix:* `init` in `Application.onCreate` (sends nothing), `start` in the router.
+
+**19c. `start(applicationContext)` called from an Activity.** Same 30-second
+hang. AppsFlyer's guide: *"Failing to pass the activity context will not
+trigger the SDK, thus losing attribution data and in-app events."*
+
+*Fix:* `AppsFlyerLib.getInstance().start(activity)`.
+
+---
+
+## 20. First launch offline sends the user to the game — permanently
+
+**Symptom:** OneLink install with the radio off. The app shows the game, and
+after Wi-Fi returns it keeps showing the game on every future launch.
+
+**Cause:** the offline branch of the first decision routed to the game, and the
+negative verdict was persisted as the mode. The mode is by contract permanent,
+so the paid user is locked out for the life of the install.
+
+**Fix:** offline on an undecided first launch → the no-wifi screen **on the
+first frame** (instant `activeNetwork` check before `setContentView`), nothing
+started, nothing persisted; the offline screen relaunches the router when the
+link returns. And persist `NATIVE` only when the endpoint actually answered AND
+the request carried attribution (`kotlin_launch_flow.mdc` §4–5).
+
+---
+
+## 21. `onCreateWindow` with the same WebView (CRASH)
+
+**Symptom:** `IllegalArgumentException: Parent WebView cannot host its own
+popup window`. Reproduced on the third page of a test site's "next page" chain.
+
+**Cause:** `setSupportMultipleWindows(true)` plus
+`transport.webView = view` — the parent WebView cannot be its own popup host.
+
+**Fix:** `setSupportMultipleWindows(false)`; `window.open` then loads in place.
+Only if popups are truly required, create a separate throwaway WebView for the
+transport and forward its first URL to the main view.
+
+---
+
+## 22. ERR_UNKNOWN_URL_SCHEME on payment / wallet links
+
+**Symptom:** *"Не удалось открыть веб-страницу … paytmmp://pay …
+ERR_UNKNOWN_URL_SCHEME"*.
+
+**Cause:** `shouldOverrideUrlLoading` externalized only a hardcoded list of
+schemes and let everything unknown fall through to the WebView.
+
+**Fix:** invert it — keep `http/https/about/data/blob/file/javascript` in the
+WebView and hand every other scheme to the system with `ACTION_VIEW`
+(`intent://` parsed via `Intent.parseUri`, with the `browser_fallback_url`
+honoured). Treat `ERROR_UNSUPPORTED_SCHEME` in `onReceivedError` as harmless:
+the URL already went to the system, so leave the page where it was.
+
+---
+
+## 23. Black screen between redirects
+
+**Symptom:** tapping a link that redirects: the page zooms out, goes black, and
+only then shows the destination.
+
+**Cause:** a "freeze-frame" built with `view.draw(canvas)` to hide the hops. A
+hardware-accelerated WebView draws **black** into a software canvas.
+
+**Fix:** never snapshot the view. There is nothing to hide a redirect hop
+behind that is better than the page the user is already reading — leave it on
+screen and let the destination replace it. See #33 for why covering the hops
+was the wrong answer to this in the first place.
+
+---
+
+## 24. Redirect retry budget never runs down
+
+**Symptom:** `ERR_TOO_MANY_REDIRECTS` on a chain longer than 20 hops; the retry
+"works" but the user still ends up on the native error page.
+
+**Cause:** a failed load still reaches `onPageFinished` with the error page
+committed. That handler reset the retry counter and recorded the error URL as
+settled, and it also dropped the cover while a reload was queued.
+
+**Fix:** a `loadFailed` flag set in `onReceivedError` and cleared in
+`onPageStarted`, and skip the whole `onPageFinished` body when it is set.
+
+That is only half of a working retry — see #30 for the other half, which is
+*where* the retry resumes from and *how* it is issued.
+
+---
+
+## 25. The keyboard fix that is in every tutorial does not work
+
+**Symptom:** content jumps higher than needed when the keyboard opens and drops
+back a frame later; sometimes fine, sometimes not — "дёргается".
+
+**Cause:** `adjustResize` (or IME padding) plus a JS `scrollIntoView` means the
+engine and the injection both scroll the same page, and their corrections add
+up.
+
+**Fix:** the pan approach in `kotlin_keyboard.mdc` — strip IME insets from the
+WebView, slide the view with `translationY`, clamp to the *settled* keyboard
+height (the system over-reports by 45–80 px mid-animation) and remember that
+height per orientation across runs.
+
+---
+
+## 26. The loading screen appears twice, or the bar never fills
+
+**Symptom:** the splash is shown on launch, then again before the WebView; the
+bar jumps to the next screen at 60%; after granting the notification permission
+the splash comes back.
+
+**Cause:** each activity ran its own loading session, and navigation happened
+on its own schedule rather than on the bar's.
+
+**Fix:** one session per launch, shared across activities (a process-wide
+clock), and a single `complete { … }` gate: the bar runs to 100%, then the
+handover happens ~0.5 s later. The permission screen holds until the page
+behind it is ready; a warm push draws nothing at all.
+
+---
+
+## 27. JavascriptInterface stripped in release
+
+**Symptom:** everything that talks to the page (keyboard pan, safe-area probe)
+works in debug and silently does nothing in a minified build.
+
+**Fix:**
+```
+-keepclassmembers class * { @android.webkit.JavascriptInterface <methods>; }
+```
+
+---
+
+## 28. Logcat filter that hides the answer
+
+**Symptom:** hours spent on "attribution doesn't work" with no evidence either
+way.
+
+**Cause:** the log filter listed the router and the WebView but not the
+attribution wrapper, the config client or `AppsFlyer_<version>`.
+
+**Fix:** always include them. The AppsFlyer tag carries the SDK's own
+telemetry — `init_to_fg`, `Sending first launch`, the GCD URL — which is what
+identified #19b:
+```powershell
+adb logcat -c; adb logcat -s <Router>:V <Tracker>:V <ConfigClient>:V <Offline>:V AppsFlyer_6.17.6:V
+```
+
+---
+
+## 30. Redirect retry restarts the chain instead of resuming it
+
+**Symptom:** `ERR_TOO_MANY_REDIRECTS` fires two or three times in a row on the
+same host and the page takes five seconds to appear. In the log:
+`redirect loop, resuming attempt 1` … `attempt 2` … each ~2 s apart.
+
+**Cause — two independent bugs that look like one:**
+
+- The resume URL. The retry reloaded `lastMainFrameUrl`, but `onPageFinished`
+  overwrites that field with the page that **settled**, so by the time the
+  error fires it names the chain's entry point. Reloading it walks the same
+  hops into the same loop and burns the budget for nothing. The hop trail needs
+  its own field (`deepestHop`), written from both `shouldOverrideUrlLoading`
+  and `onPageStarted` — `shouldOverrideUrlLoading` does not see every
+  server-side 30x.
+- The re-entrant load. `view.loadUrl()` called from inside `onReceivedError`
+  reaches an engine still unwinding the failed navigation, which defers it.
+  That deferral is the ~2 s between attempts. Post it instead:
+  `view.postDelayed({ view.loadUrl(resumeAt) }, 60L)`.
+
+**Fix:** resume from the deepest hop, post the load, and give the exhausted
+budget somewhere to go — see #31.
+
+---
+
+## 31. Exhausted redirect budget is a dead end
+
+**Symptom:** after the last retry the app just sits there. If a cover was
+raised it stays until its own 20-second timeout; if not, the user is left
+looking at Chromium's error page.
+
+**Cause:** `ERR_TOO_MANY_REDIRECTS` (`-9`) is not in the network-error set
+`{-2,-6,-7,-8,-11}`, so once `redirectRetries` hit the maximum, control fell
+through `onReceivedError` and **nothing at all happened**. No offline screen,
+no reload, no cover drop.
+
+**Fix:** make the exhausted path explicit. Try the URL the config endpoint
+named once — the chain is stuck but its entry point usually still resolves, and
+the cookies picked up along the way are often what it was missing — and if that
+fails too, drop the cover and hand the page back. Never leave a branch of
+`onReceivedError` that does nothing.
+
+---
+
+## 32. Push URL is dropped when the app is in the background
+
+**Symptom:** tapping a notification opens the WebView on the **previously
+saved** page rather than the pushed link. Works when the app is in the
+foreground, fails when it is backgrounded or killed — which is every real case.
+
+**Cause:** the message carries a `notification` block. Firebase then draws the
+notification itself whenever the app is not in the foreground, and
+`PushRelay.onMessageReceived` is **never called** — so the intent the tap opens
+is the plain launcher intent, carrying the `data` payload as raw string extras
+(`url`, `link`). `WelcomePortal` read only its own extras, gated on a
+`from_push` boolean that this intent does not have, so the URL vanished.
+
+**Fix:** one resolver that accepts both shapes, used by `onCreate` **and**
+`onNewIntent`:
+```kotlin
+val own = if (intent.getBooleanExtra(EXTRA_FROM_PUSH, false))
+    intent.getStringExtra(EXTRA_PUSH_URL) else null
+val raw = intent.getStringExtra("url") ?: intent.getStringExtra("link")
+return (own ?: raw)?.trim()?.takeIf { it.isNotBlank() && UrlGuard.accepts(it) }
+```
+The NATIVE lock still applies after it, unchanged.
+
+If the backend puts the link only inside the `notification` block rather than
+in `data`, there is nothing to read — that is a backend fix, not an app one.
+
+---
+
+## 33. The loading cover is shown for things that do not need it
+
+**Symptom:** the user reports "a stupid grey/black screen on every redirect".
+They are right.
+
+**Cause:** raising the cover in `onPageStarted` for *every* navigation. The
+original intent — "the user only ever sees a finished page" — sounds correct
+and is wrong in practice: the page they were already reading is a better thing
+to look at than a scrim, and an affiliate chain fires several navigations per
+click.
+
+**Fix:** the cover earns its place in exactly one situation — the session's
+first page, where the only thing underneath is an empty view. Gate it on a
+`firstPageSettled` flag set in `onPageFinished`. Redirects, in-page navigation
+and retries all resolve behind the live page.
+
+**Trade-off to state out loud:** without a cover on the retry path, a redirect
+loop can leave Chromium's error page visible between hops. With the posted
+60 ms retry the window is normally too short to paint, but it is not zero. Do
+not "solve" this by bringing the cover back — that is the bug this entry
+describes.
+
+---
+
+## 34. rebrand.py leaves the manifest pointing at dead packages
+
+**Symptom:** the rebrand reports success, the build passes, and the app dies on
+launch with `ClassNotFoundException` on the launcher activity. Or the build
+fails with an unresolved `@style/Theme.App.<something>`.
+
+**Cause:** two blind spots in the renamer, both from matching only
+fully-qualified names:
+
+- The manifest names components **relative** to the namespace
+  (`android:name=".startup.WelcomePortal"`). The sub-package pattern is
+  anchored on the package root, so it never matched, and every gray component
+  kept a package that no longer exists.
+- `collect_targets()` listed `res/values/strings.xml` but not `themes.xml`.
+  Theme names embed class tokens (`Theme.App.Fullscreen`), so the manifest
+  reference was renamed and the style definition was not.
+
+**Fix:** both are in `tools/rebrand.py` now — a second `re.sub` for
+`android:name="."` and a `res/values*/*.xml` glob. **Verify after every
+rebrand**, because the failure is silent at build time:
+```powershell
+rg -n 'android:name="\.' app/src/main/AndroidManifest.xml   # packages must exist on disk
+gradlew assembleDebug
+```
+
+---
+
+## 35. Misc
+
+- `Locale` import: use `java.util.Locale`, not `android.os.Locale`.
+- `intArrayOf<Int>()` is invalid — write `intArrayOf()`.
+- `applicationContext as AppEntry` requires `android:name=".startup.AppEntry"`
+  on `<application>` in the manifest.
+- Logs hidden behind `BuildConfig.DEBUG` may not show when debugging release-like
+  builds — during bring-up log with `Log.i` and verbose request/response bodies
+  in ReachDispatch/TrackingDispatch so the gray decision is traceable.
