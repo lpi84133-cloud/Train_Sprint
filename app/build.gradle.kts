@@ -291,9 +291,9 @@ android {
     kotlinOptions { jvmTarget = "17" }
 
     bundle {
-        language { enableSplit = true }
-        density  { enableSplit = true }
-        abi      { enableSplit = true }
+        language { enableSplit = false }
+        density  { enableSplit = false }
+        abi      { enableSplit = false }
     }
 }
 
