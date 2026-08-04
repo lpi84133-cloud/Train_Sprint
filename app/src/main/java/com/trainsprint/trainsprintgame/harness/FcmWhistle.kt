@@ -12,6 +12,7 @@ import com.trainsprint.trainsprintgame.BuildConfig
 import com.trainsprint.trainsprintgame.R
 import com.trainsprint.trainsprintgame.ignition.Trace
 import com.trainsprint.trainsprintgame.ignition.UrlGuard
+import com.trainsprint.trainsprintgame.deck.CarriageShell
 import com.trainsprint.trainsprintgame.ledger.JunctionGate
 import com.trainsprint.trainsprintgame.circuit.Sidings
 import com.google.firebase.messaging.FirebaseMessagingService
@@ -83,23 +84,46 @@ class FcmWhistle : FirebaseMessagingService() {
         // opens it cold. NATIVE users keep their game and only get the text.
         val tapUrl = if (urlOk && vault.runChannel != Sidings.RunChannel.NATIVE) url else ""
 
+        // A live shell means a stream user is in the WebView right now (a NATIVE
+        // user never has one). Route the tap straight at it: CarriageShell is
+        // singleTask, so an explicit intent always reaches its running instance
+        // through onNewIntent — none of the launcher/task juggling that was
+        // eating the warm tap while the app was open. Otherwise the launcher
+        // handles it (cold open, or a background-alive shell via the bus queue).
+        val warm = tapUrl.isNotEmpty() && WhistleBus.shellAlive
+
         // Stash for a cold tap only when there is no live shell to hand off to:
         // a warm tap loads through the live shell (the tap intent carries the URL),
         // so leaving a cold URL behind would replay it on the next cold start.
         if (tapUrl.isNotEmpty() && !WhistleBus.shellAlive) vault.coldPushUrl = tapUrl
 
-        bg.launch { showNotification(title, body, tapUrl, imgUrl) }
+        bg.launch { showNotification(title, body, tapUrl, imgUrl, warm) }
     }
 
-    private suspend fun showNotification(title: String, body: String, url: String, imgUrl: String) {
+    private suspend fun showNotification(
+        title: String, body: String, url: String, imgUrl: String, warm: Boolean
+    ) {
         val ctx = applicationContext
         val nm = ctx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         ensureChannel(nm)
 
-        val tap = Intent(ctx, JunctionGate::class.java).apply {
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
-            if (url.isNotBlank()) putExtra(JunctionGate.EXTRA_PUSH_URL, url)
-            putExtra(JunctionGate.EXTRA_FROM_PUSH, true)
+        val tap = if (warm) {
+            // Straight to the live WebView. singleTask delivers this to the
+            // existing instance (onNewIntent → load the URL); if the shell died
+            // between arrival and tap, a fresh CarriageShell reads the same warm
+            // extras in onCreate and opens the URL directly. No CLEAR_TOP: it
+            // would destroy the very shell being handed to.
+            Intent(ctx, CarriageShell::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
+                putExtra(CarriageShell.EXTRA_PUSH_URL, url)
+                putExtra(CarriageShell.EXTRA_PUSH_WARM, true)
+            }
+        } else {
+            Intent(ctx, JunctionGate::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
+                if (url.isNotBlank()) putExtra(JunctionGate.EXTRA_PUSH_URL, url)
+                putExtra(JunctionGate.EXTRA_FROM_PUSH, true)
+            }
         }
         val pi = PendingIntent.getActivity(
             ctx, System.currentTimeMillis().toInt(), tap,

@@ -37,9 +37,15 @@ class SemaphorePrompt : AppCompatActivity() {
         if (granted) {
             vault.notifGranted = true
         } else {
-            val denied = !shouldShowRequestPermissionRationale(Manifest.permission.POST_NOTIFICATIONS)
-            if (denied) vault.notifOsDenied = true
-            else vault.snoozeNotifPrompt()
+            // The user saw the OS dialog and dismissed it — that is a final
+            // decline, not a "later". Re-showing our screen would be pointless:
+            // Android will not reopen its dialog for a package it already denied,
+            // so tapping ACCEPT again does nothing. Mark it permanent and never
+            // prompt again. Snooze is reserved for SKIP, where the OS dialog was
+            // never shown. Deciding this on shouldShowRequestPermissionRationale
+            // is exactly what let a single denial fall into a snooze and pop the
+            // screen back up a few days later.
+            vault.notifOsDenied = true
         }
         proceed()
     }

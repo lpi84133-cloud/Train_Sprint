@@ -439,7 +439,15 @@ class CarriageShell : AppCompatActivity() {
             redirectRetries = 0
             entryPointRetried = false
             retryPending = false
+            // First real page of the session just settled. Wipe the back stack:
+            // the affiliate redirect chain and every retry loadUrl() left their own
+            // entries in history, so without this the back button walks into those
+            // hops and the engine's error page instead of the page the user is on.
+            // Clearing here makes this destination the base entry, so back inside
+            // the site returns toward the first page and stops there (no app close).
+            val wasFirstPage = !firstPageSettled
             firstPageSettled = true
+            if (wasFirstPage) view.clearHistory()
             lastMainFrameUrl = url
             deepestHop = url
             injectSafeAreaKill()

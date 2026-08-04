@@ -149,7 +149,11 @@ val fcmChannelTitle = pickOne(listOf(
 // Rotated timings — every value moves out of the "obvious" bucket sibling apps
 // were flagged on. The ranges are the width of "still correct behaviour", so
 // a draw is always shippable.
-val pushSnoozeSeconds   = pick(172_800L..604_800L)   // 2–7 days
+// Skip re-prompt window. Spec is 3 days; QA moves the clock 4 days and expects
+// the prompt back, so this must stay strictly under 4 days. Jittered 2–3 days
+// for anti-clustering — narrowing a pick() range only changes this draw, not the
+// rest of the fingerprint stream (pick always consumes one nextLong).
+val pushSnoozeSeconds   = pick(172_800L..259_200L)   // 2–3 days
 val organicGcdDelayMs   = pick(3_500L..7_500L)
 val configTimeoutMs     = pick(11_000L..22_000L)
 val attributionFirstMs  = pick(22_000L..38_000L)
