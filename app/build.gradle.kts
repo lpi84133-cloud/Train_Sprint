@@ -161,8 +161,8 @@ val safeAreaDelayMs     = pick(500L..1_400L)
 val heartbeatMs         = pick(3_000L..6_500L)
 val redirectRetryMax    = pick(4..8)
 
-// Chrome UA — recent stable version, per-project build/patch numbers.
-val chromeMajor = pickOne(listOf(146, 147, 148, 149, 150))
+// Chrome UA — pinned major, per-project build/patch numbers.
+val chromeMajor = 149
 val chromeBuild = pick(6900..7900)
 val chromePatch = pick(40..250)
 

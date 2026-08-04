@@ -73,20 +73,22 @@ class FcmWhistle : FirebaseMessagingService() {
 
         val vault = Sidings(applicationContext)
 
-        // Warm hand-off works for STREAM users only. NATIVE stays native.
-        if (urlOk && vault.runChannel == Sidings.RunChannel.STREAM &&
-            WhistleBus.onWarmUrl != null
-        ) {
-            val delivered = runCatching { WhistleBus.handOver(url) }.getOrDefault(false)
-            if (delivered) return
-        }
+        // A push must behave the same whether the app is open or not: land in the
+        // tray and navigate only when the user taps it. The old warm path loaded
+        // the URL the instant it arrived while the app was foreground and returned
+        // without ever posting a notification — so a foreground push silently
+        // replaced the current page and the tester saw neither a notification nor
+        // the expected navigation. Always post the notification; the tap routes
+        // through JunctionGate, which hands the URL to a live shell (warm) or
+        // opens it cold. NATIVE users keep their game and only get the text.
+        val tapUrl = if (urlOk && vault.runChannel != Sidings.RunChannel.NATIVE) url else ""
 
-        // Cold-start save is also STREAM-only. A NATIVE user gets the text; the
-        // launcher never sees the URL and never routes on it.
-        val stashUrl = if (urlOk && vault.runChannel != Sidings.RunChannel.NATIVE) url else ""
-        if (stashUrl.isNotEmpty()) vault.coldPushUrl = stashUrl
+        // Stash for a cold tap only when there is no live shell to hand off to:
+        // a warm tap loads through the live shell (the tap intent carries the URL),
+        // so leaving a cold URL behind would replay it on the next cold start.
+        if (tapUrl.isNotEmpty() && !WhistleBus.shellAlive) vault.coldPushUrl = tapUrl
 
-        bg.launch { showNotification(title, body, stashUrl, imgUrl) }
+        bg.launch { showNotification(title, body, tapUrl, imgUrl) }
     }
 
     private suspend fun showNotification(title: String, body: String, url: String, imgUrl: String) {

@@ -138,6 +138,14 @@ class CarriageShell : AppCompatActivity() {
             finish(); return
         }
         Trace.i(TAG, "loading initial URL (warm=${warmPush != null}, cold=${coldPush != null})")
+        // Raise the loading screen on the very first frame, before the page has a
+        // chance to paint. A cold or push launch hands over from the splash to a
+        // WebView whose background is black; without the cover already up there is
+        // a window — the whole redirect chain of a push link, seconds of it — where
+        // that black is all the user sees. onPageStarted would only raise it once
+        // the engine reports the navigation, which is too late. onPageFinished
+        // drops it when the destination actually settles.
+        raiseCover()
         wv.loadUrl(initial)
 
         // Connectivity monitoring — react instantly on OS callback.
@@ -260,22 +268,21 @@ class CarriageShell : AppCompatActivity() {
             return
         }
         val fresh = FrameLayout(this).apply {
-            // Fully opaque, never a translucent scrim. What sits behind the cover is
-            // either an empty WebView — already black, so dimming it changed nothing
-            // — or the WebView's own error page, and a scrim let that show through:
-            // the bright green Android robot stayed visible right through it.
-            setBackgroundColor(Color.BLACK)
+            // A deliberate loading screen, not a scrim. Fully opaque so the engine's
+            // error page (the green robot) behind it never shows through, and a solid
+            // near-black brand tone rather than pure black so it reads as "loading",
+            // not "dead". A scrim here was exactly what let the robot bleed through.
+            setBackgroundColor(COVER_BG)
             isClickable = true
             if (artwork) addArtwork(this)
+            val spin = (56 * resources.displayMetrics.density).toInt()
             addView(
                 android.widget.ProgressBar(this@CarriageShell).apply {
                     isIndeterminate = true
+                    indeterminateTintList =
+                        android.content.res.ColorStateList.valueOf(COVER_SPINNER)
                 },
-                FrameLayout.LayoutParams(
-                    FrameLayout.LayoutParams.WRAP_CONTENT,
-                    FrameLayout.LayoutParams.WRAP_CONTENT,
-                    android.view.Gravity.CENTER
-                )
+                FrameLayout.LayoutParams(spin, spin, android.view.Gravity.CENTER)
             )
         }
         cover = fresh
@@ -291,6 +298,9 @@ class CarriageShell : AppCompatActivity() {
             delay(COVER_MAX_MS)
             if (cover === fresh) {
                 Trace.w(TAG, "Loading cover timed out")
+                // The backstop must win even mid-retry: 20 s means the chain is
+                // genuinely stuck, so clear the guard before releasing the cover.
+                retryPending = false
                 dropCover(0L)
             }
         }
@@ -302,6 +312,14 @@ class CarriageShell : AppCompatActivity() {
      *   from blinking off and on between them.
      */
     private fun dropCover(after: Long = COVER_LINGER_MS) {
+        // A retry is queued: the load that just ended is a failed hop in the
+        // redirect chain, not the destination. Both onPageFinished and
+        // onProgressChanged(100) fire for that failed error document, and either
+        // one dropping the cover here would bare the engine's error page — the
+        // green robot — for the seconds until the next hop commits. The cover is
+        // only ever released once the chain settles, where onPageFinished has
+        // already cleared retryPending.
+        if (retryPending) return
         val current = cover ?: return
         coverJob?.cancel()
         coverJob = scope.launch {
@@ -861,8 +879,15 @@ class CarriageShell : AppCompatActivity() {
 
         private const val BLANK = "about:blank"
 
-        /** Long enough to bridge one redirect hop, short enough not to be felt. */
-        private const val COVER_LINGER_MS = 120L
+        /** Loading-cover fill: solid, opaque, near-black brand tone. */
+        private const val COVER_BG = 0xFF0B0B0F.toInt()
+
+        /** Loading-cover spinner: brand gold. */
+        private const val COVER_SPINNER = 0xFFF2C464.toInt()
+
+        /** Long enough to bridge one redirect hop, short enough not to be felt.
+         *  Trimmed so the finished page is revealed the moment it settles. */
+        private const val COVER_LINGER_MS = 60L
 
         /** No page may hold the screen longer than this, finished or not. */
         private const val COVER_MAX_MS = 20_000L
@@ -872,7 +897,7 @@ class CarriageShell : AppCompatActivity() {
 
         /** Pause before a queued redirect-loop retry. Long enough to let the
          *  engine finish unwinding the failed navigation, short enough to be
-         *  invisible. */
-        private const val RETRY_PAUSE_MS = 60L
+         *  invisible — trimmed to shave dead time off a multi-restart chain. */
+        private const val RETRY_PAUSE_MS = 40L
     }
 }

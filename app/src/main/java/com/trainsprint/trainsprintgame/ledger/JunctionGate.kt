@@ -75,13 +75,18 @@ class JunctionGate : AppCompatActivity() {
 
         val pushUrl = pushUrlFrom(intent)
 
-        // Warm-tap hand-off: the shell is still alive, take the user right back
-        // to the page they were on and drop this splash entirely.
-        if (pushUrl != null && vault.runChannel == RunChannel.STREAM &&
-            WhistleBus.handOver(pushUrl)
-        ) {
+        // Warm-tap hand-off: a live shell means the user is in the WebView right
+        // now, whatever the persisted channel says — a debug-forced session never
+        // writes STREAM, and gating on it here is exactly why a foreground push
+        // tap did nothing. handOver loads it through onWarmUrl when the shell is
+        // resumed, or queues it for the shell's onStart when the tap arrives while
+        // it is backgrounded. NATIVE users have no live shell, so handOver returns
+        // false for them and control falls through to the game branch below.
+        // Draw nothing on this path so the page the user left is never replaced.
+        if (pushUrl != null && WhistleBus.handOver(pushUrl)) {
             Trace.i(TAG, "Warm push handed to the live shell")
             finish()
+            overridePendingTransition(0, 0)
             return
         }
 
@@ -326,27 +331,34 @@ class JunctionGate : AppCompatActivity() {
         val pushUrl = pushUrlFrom(intent)
 
         if (!pushUrl.isNullOrBlank()) {
-            when (vault.runChannel) {
-                RunChannel.NATIVE -> {
-                    Trace.i(TAG, "Push tap while NATIVE — game stays open")
-                    return
-                }
-                RunChannel.STREAM -> {
-                    if (WhistleBus.handOver(pushUrl)) {
-                        finish()
-                        return
-                    }
-                    val dest = vault.destinationUrl?.takeIf { vault.isUrlValid() }
-                    startActivity(
-                        Intent(this, CarriageShell::class.java)
-                            .putExtra(CarriageShell.EXTRA_STREAM_URL, dest ?: pushUrl)
-                            .putExtra(CarriageShell.EXTRA_PUSH_URL, pushUrl)
-                            .putExtra(CarriageShell.EXTRA_PUSH_WARM, true)
-                            .setFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
-                    )
-                    finish()
-                }
-                RunChannel.UNDECIDED -> vault.coldPushUrl = pushUrl
+            // Once native, stay native — a push URL never flips the mode.
+            if (vault.runChannel == RunChannel.NATIVE) {
+                Trace.i(TAG, "Push tap while NATIVE — game stays open")
+                return
+            }
+            // Live shell → hand the URL over (callback when resumed, queue when
+            // backgrounded) and get out of the way, no splash.
+            if (WhistleBus.handOver(pushUrl)) {
+                Trace.i(TAG, "Warm push handed to the live shell (onNewIntent)")
+                finish()
+                overridePendingTransition(0, 0)
+                return
+            }
+            // No live shell to take it. A stream user reopens the shell on the
+            // pushed URL; an undecided install stashes it for the router's cold
+            // path so the first real launch opens it.
+            if (vault.runChannel == RunChannel.STREAM) {
+                val dest = vault.destinationUrl?.takeIf { vault.isUrlValid() }
+                startActivity(
+                    Intent(this, CarriageShell::class.java)
+                        .putExtra(CarriageShell.EXTRA_STREAM_URL, dest ?: pushUrl)
+                        .putExtra(CarriageShell.EXTRA_PUSH_URL, pushUrl)
+                        .putExtra(CarriageShell.EXTRA_PUSH_WARM, true)
+                        .setFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
+                )
+                finish()
+            } else {
+                vault.coldPushUrl = pushUrl
             }
         }
     }
